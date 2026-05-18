@@ -1,0 +1,11 @@
+name = "samoondgital-adminpanel"
+main = "src/index.ts"
+compatibility_date = "2026-05-18"
+
+[vars]
+SESSION_SECRET = "change-this-before-production"
+
+[[d1_databases]]
+binding = "ADMIN_DB"
+database_name = "samoondgital_admin"
+database_id = "replace-with-your-d1-database-id"
