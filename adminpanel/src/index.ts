@@ -2,65 +2,80 @@ import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
 
 type Bindings = {
-    ADMIN_DB: D1Database;
-    SESSION_SECRET: string;
+  ADMIN_DB: D1Database;
+  SESSION_SECRET: string;
 };
 
 type AdminUserRow = {
-    id: string;
-    username: string;
-    display_name: string;
-    password_hash: string;
-    role: string;
+  id: string;
+  username: string;
+  display_name: string;
+  password_hash: string;
+  role: string;
 };
 
 type SessionUser = {
-    id: string;
-    username: string;
-    displayName: string;
-    role: string;
-    exp: number;
+  id: string;
+  username: string;
+  displayName: string;
+  role: string;
+  exp: number;
 };
+
+// Temporary type definition for D1Database
+interface D1Database {
+  prepare(query: string): D1PreparedStatement;
+}
+
+interface D1PreparedStatement {
+  bind(...values: any[]): D1PreparedStatement;
+  first<T = unknown>(): Promise<T | null>;
+  all<T = unknown>(): Promise<{ results: T[] } | null>;
+  run(): Promise<void>;
+}
 
 const app = new Hono<{ Bindings: Bindings }>();
 const SESSION_COOKIE = 'samoondgital_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 function escapeHtml(value: string) {
-    return value
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
-async function sha256Hex(value: string) {
-    const bytes = new TextEncoder().encode(value);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+async function sha256Hex(value: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(value);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 async function readSession(c: Context<{ Bindings: Bindings }>) {
-    const raw = await getSignedCookie(c, c.env.SESSION_SECRET, SESSION_COOKIE);
+  const raw = await getSignedCookie(c, c.env.SESSION_SECRET, SESSION_COOKIE);
 
-    if (!raw) {
-        return null;
-    }
+  if (!raw) {
+    return null;
+  }
 
-    try {
-        const session = JSON.parse(raw) as SessionUser;
-        if (!session.exp || session.exp < Date.now()) {
-            return null;
-        }
-        return session;
-    } catch {
-        return null;
+  try {
+    const session = JSON.parse(raw) as SessionUser;
+    if (!session.exp || session.exp < Date.now()) {
+      return null;
     }
+    return session;
+  } catch {
+    return null;
+  }
 }
 
 function shellStyles() {
-    return `
+  return `
     :root {
       color-scheme: dark;
       --bg: #07111f;
@@ -144,7 +159,7 @@ function shellStyles() {
 }
 
 function loginPage(error = '') {
-    return `<!doctype html>
+  return `<!doctype html>
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -229,14 +244,14 @@ function loginPage(error = '') {
 }
 
 function dashboardPage(user: SessionUser) {
-    const cards = [
-        ['Published', '12'],
-        ['Drafts', '05'],
-        ['Scheduled', '03'],
-        ['AI Queue', '07'],
-    ];
+  const cards = [
+    ['Published', '12'],
+    ['Drafts', '05'],
+    ['Scheduled', '03'],
+    ['AI Queue', '07'],
+  ];
 
-    return `<!doctype html>
+  return `<!doctype html>
   <html lang="en">
     <head>
       <meta charset="utf-8" />
@@ -279,15 +294,15 @@ function dashboardPage(user: SessionUser) {
 
             <div class="grid">
               ${cards
-            .map(
-                ([label, value]) => `
+      .map(
+        ([label, value]) => `
                     <div class="stat">
                       <span>${label}</span>
                       <strong>${value}</strong>
                     </div>
                   `,
-            )
-            .join('')}
+      )
+      .join('')}
             </div>
 
             <div class="columns">
@@ -333,108 +348,87 @@ function dashboardPage(user: SessionUser) {
   </html>`;
 }
 
-app.get('/api/me', async (c) => {
-    const session = await readSession(c);
-
-    if (!session) {
-        return c.json({ ok: false, message: 'Not authenticated' }, 401);
-    }
-
-    return c.json({ ok: true, user: session });
-});
-
-app.post('/api/login', async (c) => {
-    const body = await c.req.json<{ username?: string; password?: string }>().catch(() => null);
-    const username = body?.username?.trim() ?? '';
-    const password = body?.password ?? '';
-
-    if (!username || !password) {
-        return c.json({ ok: false, message: 'Admin ID aur password required hai.' }, 400);
-    }
-
-    const user = await c.env.ADMIN_DB.prepare(
-        'SELECT id, username, display_name, password_hash, role FROM admin_users WHERE username = ? LIMIT 1',
-    )
-        .bind(username)
-        .first<AdminUserRow>();
-
-    if (!user) {
-        return c.json({ ok: false, message: 'Invalid admin ID or password.' }, 401);
-    }
-
-    const passwordHash = await sha256Hex(password);
-    if (passwordHash !== user.password_hash) {
-        return c.json({ ok: false, message: 'Invalid admin ID or password.' }, 401);
-    }
-
-    const session: SessionUser = {
-        id: user.id,
-        username: user.username,
-        displayName: user.display_name,
-        role: user.role,
-        exp: Date.now() + SESSION_TTL_MS,
-    };
-
-    await setSignedCookie(c, SESSION_COOKIE, JSON.stringify(session), c.env.SESSION_SECRET, {
-        httpOnly: true,
-        sameSite: 'Lax',
-        secure: new URL(c.req.url).hostname !== 'localhost' && new URL(c.req.url).hostname !== '127.0.0.1',
-        path: '/',
-        maxAge: Math.floor(SESSION_TTL_MS / 1000),
-    });
-
-    return c.json({ ok: true, user: { id: user.id, username: user.username, displayName: user.display_name, role: user.role } });
-});
-
-app.post('/api/logout', async (c) => {
-    deleteCookie(c, SESSION_COOKIE, { path: '/' });
-    return c.json({ ok: true });
-});
-
 app.get('/', async (c) => {
-    const session = await readSession(c);
+  const session = await readSession(c);
 
-    if (!session) {
-        return c.html(loginPage());
-    }
+  if (!session) {
+    return c.html(loginPage());
+  }
 
-    return c.html(dashboardPage(session));
+  return c.html(dashboardPage(session));
 });
 
-app.get('/login', async (c) => c.html(loginPage()));
+app.get('/api/me', async (c) => {
+  const session = await readSession(c);
 
-app.get('/articles', async (c) => {
-    const session = await readSession(c);
-    if (!session) {
-        return c.redirect('/login');
-    }
-    return c.html(dashboardPage(session));
+  if (!session) {
+    return c.json({ ok: false, message: 'Not authenticated' }, 401);
+  }
+
+  return c.json({ ok: true, user: session });
 });
 
-app.get('/categories', async (c) => {
-    const session = await readSession(c);
-    if (!session) {
-        return c.redirect('/login');
-    }
-    return c.html(dashboardPage(session));
+app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
+  const { username, password } = await c.req.json<{
+    username?: string;
+    password?: string;
+  }>();
+
+  if (!username || !password) {
+    return c.json({ ok: false, message: 'Username and password are required' }, 400);
+  }
+
+  const db = c.env.ADMIN_DB;
+  const user = await db
+    .prepare('SELECT * FROM admin_users WHERE username = ?')
+    .bind(username)
+    .first<AdminUserRow>();
+
+  if (!user) {
+    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
+  }
+
+  const passwordHash = await sha256Hex(password);
+  if (passwordHash !== user.password_hash) {
+    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
+  }
+
+  const session: SessionUser = {
+    id: user.id,
+    username: user.username,
+    displayName: user.display_name,
+    role: user.role,
+    exp: Date.now() + SESSION_TTL_MS,
+  };
+
+  await setSignedCookie(c, SESSION_COOKIE, JSON.stringify(session), c.env.SESSION_SECRET, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    path: '/',
+    secure: new URL(c.req.url).protocol === 'https:',
+  });
+
+  return c.json({ ok: true, user: session });
 });
 
-app.get('/seo', async (c) => {
-    const session = await readSession(c);
-    if (!session) {
-        return c.redirect('/login');
-    }
-    return c.html(dashboardPage(session));
+app.post('/api/logout', (c) => {
+  deleteCookie(c, SESSION_COOKIE, {
+    path: '/',
+  });
+  return c.json({ ok: true });
 });
 
-app.get('/articles/new', async (c) => {
-    const session = await readSession(c);
-    if (!session) {
-        return c.redirect('/login');
-    }
-    return c.html(dashboardPage(session));
-});
+app.get('/profile', async (c) => {
+  const session = await readSession(c);
 
-app.notFound((c) => c.html(loginPage('Page not found.')));
+  if (!session) {
+    deleteCookie(c, SESSION_COOKIE, {
+      path: '/',
+    });
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  return c.json({ ok: true, user: session });
+});
 
 export default app;
