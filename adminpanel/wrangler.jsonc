@@ -1,15 +1,16 @@
-{
+﻿{
     "name": "samoondgital-adminpanel",
     "compatibility_date": "2026-05-19",
     "main": "src/index.ts",
     "vars": {
-        "SESSION_SECRET": "local-testing-secret"
+        "SESSION_SECRET": "local-testing-secret",
+        "OPENAI_API_KEY": ""
     },
     "d1_databases": [
         {
-            "binding": "ADMIN_DB",
             "database_name": "samoondgital_admin",
-            "database_id": "local-database-id"
+            "database_id": "f475a09d-6844-46c7-9860-4a55c73dcf30",
+            "binding": "ADMIN_DB"
         }
     ]
 }

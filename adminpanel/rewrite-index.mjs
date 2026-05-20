@@ -1,240 +1,18 @@
-import { Hono, type Context } from 'hono';
-import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
-import { buildSeoPrompt } from './lib/seo-prompt';
-import { initOpenAIClient, getOpenAIClient } from './lib/openai';
+import { readFileSync, writeFileSync } from 'fs';
 
-type Bindings = {
-  ADMIN_DB: D1Database;
-  SESSION_SECRET: string;
-  OPENAI_API_KEY: string;
-};
+const OLD_RAW = readFileSync('./src/index.ts', 'utf8');
+// Normalize to LF for consistent string matching
+const OLD = OLD_RAW.replace(/\r\n/g, '\n');
 
-type AdminUserRow = {
-  id: string;
-  username: string;
-  display_name: string;
-  password_hash: string;
-  role: string;
-};
+// ─── 1. Replace shellStyles + navItem (no ${} in CSS so safe) ─────────────────
+const OLD_SHELL_START = 'function shellStyles() {\n  return `\n    :root {\n      color-scheme: dark;';
 
-type SessionUser = {
-  id: string;
-  username: string;
-  displayName: string;
-  role: string;
-  exp: number;
-};
+const OLD_NAV_END = `function navItem(href: string, label: string, active: boolean) {
+  return \`<a class="nav-item\${active ? ' active' : ''}" href="\${href}">\${label}</a>\`;
+}`;
 
-type ArticleRow = {
-  id: string;
-  title: string;
-  slug: string;
-  excerpt: string | null;
-  content: string;
-  category: string | null;
-  seo_title: string | null;
-  seo_description: string | null;
-  status: string;
-  author_id: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type RecentArticleRow = {
-  id: string;
-  title: string;
-  slug: string;
-  category: string | null;
-  status: string;
-  updated_at: string;
-};
-
-type ArticleMetricRow = {
-  status: string;
-  total: number | string;
-};
-
-type DashboardMetrics = {
-  totalArticles: number;
-  publishedArticles: number;
-  draftArticles: number;
-  reviewArticles: number;
-  recentArticles: RecentArticleRow[];
-};
-
-interface D1Database {
-  prepare(query: string): D1PreparedStatement;
-}
-
-interface D1PreparedStatement {
-  bind(...values: unknown[]): D1PreparedStatement;
-  first<T = unknown>(): Promise<T | null>;
-  all<T = unknown>(): Promise<{ results: T[] } | null>;
-  run(): Promise<void>;
-}
-
-const app = new Hono<{ Bindings: Bindings }>();
-const SESSION_COOKIE = 'samoondgital_session';
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-function normalizeText(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function slugify(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function articleStatusTone(status: string) {
-  switch (status) {
-    case 'published':
-      return 'published';
-    case 'review':
-      return 'review';
-    default:
-      return 'draft';
-  }
-}
-
-function articleStatusLabel(status: string) {
-  switch (status) {
-    case 'published':
-      return 'Published';
-    case 'review':
-      return 'In Review';
-    default:
-      return 'Draft';
-  }
-}
-
-function formatDateLabel(value: string) {
-  try {
-    return new Intl.DateTimeFormat('en-IN', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(value);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function readSession(c: Context<{ Bindings: Bindings }>) {
-  const raw = await getSignedCookie(c, c.env.SESSION_SECRET, SESSION_COOKIE);
-
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const session = JSON.parse(raw) as SessionUser;
-    if (!session.exp || session.exp < Date.now()) {
-      return null;
-    }
-    return session;
-  } catch {
-    return null;
-  }
-}
-
-async function requireSession(c: Context<{ Bindings: Bindings }>) {
-  const session = await readSession(c);
-
-  if (!session) {
-    deleteCookie(c, SESSION_COOKIE, {
-      path: '/',
-    });
-    return null;
-  }
-
-  return session;
-}
-
-async function queryAll<T>(statement: D1PreparedStatement) {
-  const result = await statement.all<T>();
-  return result?.results ?? [];
-}
-
-async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
-  try {
-    const metricRows = await queryAll<ArticleMetricRow>(
-      db.prepare('SELECT status, COUNT(*) AS total FROM articles GROUP BY status'),
-    );
-    const recentArticles = await queryAll<RecentArticleRow>(
-      db.prepare(
-        'SELECT id, title, slug, category, status, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 5',
-      ),
-    );
-
-    let totalArticles = 0;
-    let publishedArticles = 0;
-    let draftArticles = 0;
-    let reviewArticles = 0;
-
-    for (const row of metricRows) {
-      const count = Number(row.total) || 0;
-      totalArticles += count;
-
-      if (row.status === 'published') {
-        publishedArticles = count;
-      } else if (row.status === 'review') {
-        reviewArticles = count;
-      } else {
-        draftArticles += count;
-      }
-    }
-
-    return {
-      totalArticles,
-      publishedArticles,
-      draftArticles,
-      reviewArticles,
-      recentArticles,
-    };
-  } catch {
-    return {
-      totalArticles: 0,
-      publishedArticles: 0,
-      draftArticles: 0,
-      reviewArticles: 0,
-      recentArticles: [],
-    };
-  }
-}
-
-async function readArticles(db: D1Database) {
-  return queryAll<ArticleRow>(
-    db.prepare(
-      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
-    ),
-  );
-}
-
-function shellStyles() {
-  return `
+const NEW_SHELL_AND_NAV = `function shellStyles() {
+  return \`
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg: #ffffff;
@@ -330,21 +108,46 @@ function shellStyles() {
     @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } .article-grid, .cols-2, .cols-aside { grid-template-columns: 1fr; } }
     @media (max-width: 768px) { .app { grid-template-columns: 1fr; } .sidebar { height: auto; position: static; flex-direction: row; flex-wrap: wrap; padding: 12px 16px; } .sidebar-brand { border-bottom: none; border-right: 1px solid var(--border); margin-right: 16px; padding-right: 16px; margin-bottom: 0; } .sidebar-footer { border-top: none; padding-top: 0; margin-left: auto; } .stats-grid { grid-template-columns: repeat(2, 1fr); } .main { padding: 16px; } .page-header { flex-direction: column; } }
     @media (max-width: 480px) { .stats-grid { grid-template-columns: 1fr; } .header-actions { flex-wrap: wrap; } }
-  `;
+  \`;
 }
 
 function navItem(href: string, label: string, active: boolean) {
-  return `<a class="nav-link${active ? ' active' : ''}" href="${href}">${label}</a>`;
-}
+  return \`<a class="nav-link\${active ? ' active' : ''}" href="\${href}">\${label}</a>\`;
+}`;
 
+// Find start and end of the block to replace
+const startIdx = OLD.indexOf('function shellStyles() {\n  return `\n    :root {\n      color-scheme: dark;');
+if (startIdx === -1) throw new Error('Could not find shellStyles start');
+
+const navItemEnd = OLD.indexOf(
+    'function navItem(href: string, label: string, active: boolean) {\n  return `<a class="nav-item'
+);
+if (navItemEnd === -1) throw new Error('Could not find navItem start');
+
+// Find end of navItem function
+const navItemFuncEnd = OLD.indexOf('\n}', navItemEnd) + 2;
+
+let content = OLD.slice(0, startIdx) + NEW_SHELL_AND_NAV + OLD.slice(navItemFuncEnd);
+
+// ─── 2. Replace loginPage ────────────────────────────────────────────────────
+const oldLoginStart = OLD.indexOf('\nfunction loginPage(error = \'\') {');
+if (oldLoginStart === -1) throw new Error('loginPage not found');
+const oldLoginFuncEnd = content.indexOf('\nfunction appShellPage(');
+if (oldLoginFuncEnd === -1) throw new Error('appShellPage not found after loginPage replacement');
+
+// Need to search in 'content' now
+const newLoginStart = content.indexOf('\nfunction loginPage(error = \'\') {');
+const newLoginEnd = content.indexOf('\nfunction appShellPage(');
+
+const NEW_LOGIN = `
 function loginPage(error = '') {
-  return `<!doctype html>
+  return \`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Samoon Digital — Admin</title>
-  <style>${shellStyles()}</style>
+  <style>\${shellStyles()}</style>
 </head>
 <body>
   <div class="login-page">
@@ -363,7 +166,7 @@ function loginPage(error = '') {
           <input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
         </div>
         <button class="btn btn-primary btn-full" id="submit-btn" type="submit">Sign in</button>
-        <div class="notice error" id="notice">${escapeHtml(error)}</div>
+        <div class="notice error" id="notice">\${escapeHtml(error)}</div>
       </form>
     </div>
   </div>
@@ -395,10 +198,18 @@ function loginPage(error = '') {
     });
   </script>
 </body>
-</html>`;
+</html>\`;
 }
 
+`;
 
+content = content.slice(0, newLoginStart) + NEW_LOGIN + content.slice(newLoginEnd);
+
+// ─── 3. Replace appShellPage ─────────────────────────────────────────────────
+const appShellStart = content.indexOf('\nfunction appShellPage(');
+const appShellEnd = content.indexOf('\nfunction dashboardPage(');
+
+const NEW_APPSHELL = `
 function appShellPage(
   user: SessionUser,
   options: {
@@ -411,13 +222,13 @@ function appShellPage(
     content: string;
   },
 ) {
-  return `<!doctype html>
+  return \`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(options.pageTitle)}</title>
-  <style>${shellStyles()}</style>
+  <title>\${escapeHtml(options.pageTitle)}</title>
+  <style>\${shellStyles()}</style>
 </head>
 <body>
   <div class="app">
@@ -426,14 +237,14 @@ function appShellPage(
         <strong>Samoon Digital</strong>
         <span>Admin Panel</span>
       </div>
-      ${navItem('/', 'Dashboard', options.activeNav === 'dashboard')}
-      ${navItem('/articles', 'Articles', options.activeNav === 'articles')}
-      ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
-      ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
+      \${navItem('/', 'Dashboard', options.activeNav === 'dashboard')}
+      \${navItem('/articles', 'Articles', options.activeNav === 'articles')}
+      \${navItem('/categories', 'Categories', options.activeNav === 'categories')}
+      \${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
-          <strong>${escapeHtml(user.displayName)}</strong>
-          <span>@${escapeHtml(user.username)} &middot; ${escapeHtml(user.role)}</span>
+          <strong>\${escapeHtml(user.displayName)}</strong>
+          <span>@\${escapeHtml(user.username)} &middot; \${escapeHtml(user.role)}</span>
         </div>
         <button class="btn btn-ghost" id="logout-btn" type="button">Sign out</button>
       </div>
@@ -441,12 +252,12 @@ function appShellPage(
     <main class="main">
       <div class="page-header">
         <div>
-          <h1>${escapeHtml(options.title)}</h1>
-          <p>${escapeHtml(options.subtitle)}</p>
+          <h1>\${escapeHtml(options.title)}</h1>
+          <p>\${escapeHtml(options.subtitle)}</p>
         </div>
-        <div class="header-actions">${options.toolbar ?? ''}</div>
+        <div class="header-actions">\${options.toolbar ?? ''}</div>
       </div>
-      ${options.content}
+      \${options.content}
     </main>
   </div>
   <script>
@@ -456,28 +267,36 @@ function appShellPage(
     });
   </script>
 </body>
-</html>`;
+</html>\`;
 }
 
+`;
 
+content = content.slice(0, appShellStart) + NEW_APPSHELL + content.slice(appShellEnd);
+
+// ─── 4. Replace dashboardPage ────────────────────────────────────────────────
+const dashStart = content.indexOf('\nfunction dashboardPage(');
+const dashEnd = content.indexOf('\nfunction articlesPage(');
+
+const NEW_DASHBOARD = `
 function dashboardPage(user: SessionUser, metrics: DashboardMetrics) {
   const recentList = metrics.recentArticles.length
     ? metrics.recentArticles
-      .map(
-        (a) => `
+        .map(
+          (a) => \`
       <div class="item-row">
         <div>
-          <div class="title">${escapeHtml(a.title)}</div>
-          <div class="meta">${escapeHtml(a.category || 'General')} &middot; /${escapeHtml(a.slug)}</div>
+          <div class="title">\${escapeHtml(a.title)}</div>
+          <div class="meta">\${escapeHtml(a.category || 'General')} &middot; /\${escapeHtml(a.slug)}</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
-          <span class="badge badge-${articleStatusTone(a.status)}">${escapeHtml(articleStatusLabel(a.status))}</span>
-          <span style="font-size:0.8125rem;color:var(--text-dim)">${escapeHtml(formatDateLabel(a.updated_at))}</span>
+          <span class="badge badge-\${articleStatusTone(a.status)}">\${escapeHtml(articleStatusLabel(a.status))}</span>
+          <span style="font-size:0.8125rem;color:var(--text-dim)">\${escapeHtml(formatDateLabel(a.updated_at))}</span>
         </div>
-      </div>`,
-      )
-      .join('')
-    : `<div class="empty-state">No articles yet.</div>`;
+      </div>\`,
+        )
+        .join('')
+    : \`<div class="empty-state">No articles yet.</div>\`;
 
   return appShellPage(user, {
     activeNav: 'dashboard',
@@ -485,16 +304,16 @@ function dashboardPage(user: SessionUser, metrics: DashboardMetrics) {
     eyebrow: 'Dashboard',
     title: 'Dashboard',
     subtitle: 'Overview of your content pipeline',
-    toolbar: `
+    toolbar: \`
       <a class="btn btn-secondary" href="/articles">Articles</a>
       <a class="btn btn-primary" href="/articles/new">New Article</a>
-    `,
-    content: `
+    \`,
+    content: \`
       <div class="stats-grid">
-        <div class="stat-card"><div class="label">Total</div><div class="value">${metrics.totalArticles}</div></div>
-        <div class="stat-card"><div class="label">Published</div><div class="value">${metrics.publishedArticles}</div></div>
-        <div class="stat-card"><div class="label">Drafts</div><div class="value">${metrics.draftArticles}</div></div>
-        <div class="stat-card"><div class="label">In Review</div><div class="value">${metrics.reviewArticles}</div></div>
+        <div class="stat-card"><div class="label">Total</div><div class="value">\${metrics.totalArticles}</div></div>
+        <div class="stat-card"><div class="label">Published</div><div class="value">\${metrics.publishedArticles}</div></div>
+        <div class="stat-card"><div class="label">Drafts</div><div class="value">\${metrics.draftArticles}</div></div>
+        <div class="stat-card"><div class="label">In Review</div><div class="value">\${metrics.reviewArticles}</div></div>
       </div>
       <div class="card">
         <div class="card-header">
@@ -502,39 +321,48 @@ function dashboardPage(user: SessionUser, metrics: DashboardMetrics) {
           <a class="btn btn-secondary" href="/articles">View all</a>
         </div>
         <div class="card-body">
-          <div class="item-list">${recentList}</div>
+          <div class="item-list">\${recentList}</div>
         </div>
       </div>
-    `,
+    \`,
   });
 }
 
+`;
 
+content = content.slice(0, dashStart) + NEW_DASHBOARD + content.slice(dashEnd);
+
+// ─── 5. Replace articlesPage ─────────────────────────────────────────────────
+const artStart = content.indexOf('\nfunction articlesPage(');
+const artEnd = content.indexOf('\nfunction articleEditorPage(');
+if (artEnd === -1) throw new Error('articleEditorPage not found');
+
+const NEW_ARTICLES = `
 function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
   const articleCards = articles.length
-    ? `
+    ? \`
       <div class="article-grid">
-        ${articles
-      .map(
-        (a) => `
+        \${articles
+          .map(
+            (a) => \`
           <article class="article-card">
             <div class="article-card-top">
               <div>
-                <h3>${escapeHtml(a.title)}</h3>
+                <h3>\${escapeHtml(a.title)}</h3>
                 <div class="article-card-meta" style="margin-top:4px;">
-                  <span>${escapeHtml(a.category || 'General')} &middot; /${escapeHtml(a.slug)}</span>
+                  <span>\${escapeHtml(a.category || 'General')} &middot; /\${escapeHtml(a.slug)}</span>
                 </div>
               </div>
-              <span class="badge badge-${articleStatusTone(a.status)}">${escapeHtml(articleStatusLabel(a.status))}</span>
+              <span class="badge badge-\${articleStatusTone(a.status)}">\${escapeHtml(articleStatusLabel(a.status))}</span>
             </div>
-            <p>${escapeHtml(a.excerpt || 'No excerpt available.')}</p>
-            <div class="article-card-meta">Updated ${escapeHtml(formatDateLabel(a.updated_at))}</div>
-          </article>`,
-      )
-      .join('')}
+            <p>\${escapeHtml(a.excerpt || 'No excerpt available.')}</p>
+            <div class="article-card-meta">Updated \${escapeHtml(formatDateLabel(a.updated_at))}</div>
+          </article>\`,
+          )
+          .join('')}
       </div>
-    `
-    : `<div class="empty-state">No articles yet. Click New Article to generate your first one.</div>`;
+    \`
+    : \`<div class="empty-state">No articles yet. Click New Article to generate your first one.</div>\`;
 
   return appShellPage(user, {
     activeNav: 'articles',
@@ -542,17 +370,25 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
     eyebrow: 'Articles',
     title: 'Articles',
     subtitle: 'All articles in your D1 database',
-    toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
-    content: `
+    toolbar: \`<a class="btn btn-primary" href="/articles/new">New Article</a>\`,
+    content: \`
       <div class="stack">
-        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
-        ${articleCards}
+        \${message ? \`<div class="notice ok">\${escapeHtml(message)}</div>\` : ''}
+        \${articleCards}
       </div>
-    `,
+    \`,
   });
 }
 
+`;
 
+content = content.slice(0, artStart) + NEW_ARTICLES + content.slice(artEnd);
+
+// ─── 6. Replace articleEditorPage with aiGenerationPage ──────────────────────
+const editorStart = content.indexOf('\nfunction articleEditorPage(');
+const placeholderStart = content.indexOf('\nfunction placeholderPage(');
+
+const NEW_AI_PAGE = `
 function aiGenerationPage(user: SessionUser) {
   return appShellPage(user, {
     activeNav: 'articles',
@@ -560,8 +396,8 @@ function aiGenerationPage(user: SessionUser) {
     eyebrow: 'AI Generator',
     title: 'Generate Article with AI',
     subtitle: 'Enter a title and category. GPT-4 Turbo writes a full SEO-optimized article and DALL-E 3 creates the featured image.',
-    toolbar: `<a class="btn btn-secondary" href="/articles">Back to Articles</a>`,
-    content: `
+    toolbar: \`<a class="btn btn-secondary" href="/articles">Back to Articles</a>\`,
+    content: \`
       <div class="cols-aside">
         <div class="card">
           <div class="card-header"><h2>Blog Details</h2></div>
@@ -646,250 +482,133 @@ function aiGenerationPage(user: SessionUser) {
           }
         });
       </script>
-    `,
+    \`,
   });
 }
 
+`;
 
-function placeholderPage(
-  user: SessionUser,
-  activeNav: 'categories' | 'seo',
-  title: string,
-  description: string,
-) {
-  return appShellPage(user, {
-    activeNav,
-    pageTitle: `${title} | Samoon Digital Admin`,
-    eyebrow: activeNav === 'categories' ? 'Taxonomy' : 'Search Optimization',
-    title,
-    subtitle: description,
-    toolbar: `<a class="btn btn-secondary" href="/articles/new">New Article</a>`,
-    content: `
-      <div class="card"><div class="card-body">
+content = content.slice(0, editorStart) + NEW_AI_PAGE + content.slice(placeholderStart);
+
+// ─── 7. Replace placeholderPage toolbar + content ────────────────────────────
+content = content.replace(
+    `toolbar: \`<a class="button secondary" href="/articles/new">Open Article Editor</a>\``,
+    `toolbar: \`<a class="btn btn-secondary" href="/articles/new">New Article</a>\``
+);
+content = content.replace(
+    `      <section class="section">
         <div class="empty-state">
           Ye section next layer ke liye ready hai. Article workflow ab functional hai, isliye categories aur SEO presets ko isi base par add kiya ja sakta hai.
         </div>
-      </div></div>
-    `,
-  });
-}
+      </section>`,
+    `      <div class="card"><div class="card-body">
+        <div class="empty-state">
+          Ye section next layer ke liye ready hai. Article workflow ab functional hai, isliye categories aur SEO presets ko isi base par add kiya ja sakta hai.
+        </div>
+      </div></div>`
+);
 
-app.get('/', async (c) => {
-  const session = await readSession(c);
+// ─── 8. Update /articles/new route to use aiGenerationPage ───────────────────
+content = content.replace(
+    '    return c.html(articleEditorPage(session));',
+    '    return c.html(aiGenerationPage(session));'
+);
 
-  if (!session) {
-    return c.html(loginPage());
-  }
+// ─── 9. Update /articles route message ───────────────────────────────────────
+content = content.replace(
+    `    const message = url.searchParams.get('created') ? 'Article D1 database me save ho gaya.' : '';`,
+    `    let message = '';
+    if (url.searchParams.get('created')) {
+        message = 'Article saved successfully.';
+    } else if (url.searchParams.get('generated')) {
+        message = 'AI-generated article saved as Draft. Review and publish when ready!';
+    }`
+);
 
-  const metrics = await readDashboardMetrics(c.env.ADMIN_DB);
-  return c.html(dashboardPage(session, metrics));
-});
+// ─── 10. Replace POST /api/articles with POST /api/articles/generate ─────────
+const oldApiStart = content.indexOf("\napp.post('/api/articles',");
+const oldApiEnd = content.indexOf("\napp.post('/api/logout',");
 
-app.get('/articles', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.redirect('/');
-  }
-
-  const url = new URL(c.req.url);
-  const articles = await readArticles(c.env.ADMIN_DB);
-  const message = url.searchParams.get('created') ? 'Article D1 database me save ho gaya.' : '';
-  return c.html(articlesPage(session, articles, message));
-});
-
-app.get('/articles/new', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.redirect('/');
-  }
-
-  return c.html(aiGenerationPage(session));
-});
-
-app.get('/categories', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.redirect('/');
-  }
-
-  return c.html(
-    placeholderPage(
-      session,
-      'categories',
-      'Categories',
-      'Article system live hone ke baad taxonomy management sabse natural next layer hai.',
-    ),
-  );
-});
-
-app.get('/seo', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.redirect('/');
-  }
-
-  return c.html(
-    placeholderPage(
-      session,
-      'seo',
-      'SEO Tools',
-      'Search metadata aur template presets ko article schema ke upar seedha mount kiya ja sakta hai.',
-    ),
-  );
-});
-
-app.get('/api/me', async (c) => {
-  const session = await readSession(c);
-
-  if (!session) {
-    return c.json({ ok: false, message: 'Not authenticated' }, 401);
-  }
-
-  return c.json({ ok: true, user: session });
-});
-
-app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
-  const { username, password } = await c.req.json<{
-    username?: string;
-    password?: string;
-  }>();
-
-  if (!username || !password) {
-    return c.json({ ok: false, message: 'Username and password are required' }, 400);
-  }
-
-  const db = c.env.ADMIN_DB;
-  const user = await db
-    .prepare('SELECT * FROM admin_users WHERE username = ?')
-    .bind(username)
-    .first<AdminUserRow>();
-
-  if (!user) {
-    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
-  }
-
-  const passwordHash = await sha256Hex(password);
-  if (passwordHash !== user.password_hash) {
-    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
-  }
-
-  const session: SessionUser = {
-    id: user.id,
-    username: user.username,
-    displayName: user.display_name,
-    role: user.role,
-    exp: Date.now() + SESSION_TTL_MS,
-  };
-
-  await setSignedCookie(c, SESSION_COOKIE, JSON.stringify(session), c.env.SESSION_SECRET, {
-    httpOnly: true,
-    sameSite: 'Lax',
-    path: '/',
-    secure: new URL(c.req.url).protocol === 'https:',
-  });
-
-  return c.json({ ok: true, user: session });
-});
-
+const NEW_API = `
 app.post('/api/articles/generate', async (c) => {
-  const session = await requireSession(c);
+    const session = await requireSession(c);
 
-  if (!session) {
-    return c.json({ ok: false, message: 'Unauthorized' }, 401);
-  }
-
-  try {
-    const openaiKey = c.env.OPENAI_API_KEY;
-    if (!openaiKey) {
-      return c.json({ ok: false, message: 'OpenAI API key not configured' }, 500);
-    }
-    initOpenAIClient(openaiKey);
-    const openaiClient = getOpenAIClient();
-
-    const body = await c.req.json<{ title?: string; category?: string }>();
-    const title = normalizeText(body.title);
-    const category = normalizeText(body.category) || 'Default';
-
-    if (!title) {
-      return c.json({ ok: false, message: 'Blog title is required' }, 400);
+    if (!session) {
+        return c.json({ ok: false, message: 'Unauthorized' }, 401);
     }
 
-    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
-    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
-    const featuredImageUrl = await openaiClient.generateFeaturedImage(
-      blogContent.featured_image_prompt,
-      title,
-    );
+    try {
+        const openaiKey = c.env.OPENAI_API_KEY;
+        if (!openaiKey) {
+            return c.json({ ok: false, message: 'OpenAI API key not configured' }, 500);
+        }
+        initOpenAIClient(openaiKey);
+        const openaiClient = getOpenAIClient();
 
-    const articleId = crypto.randomUUID();
-    const slug = slugify(title);
-    const now = new Date().toISOString();
+        const body = await c.req.json<{ title?: string; category?: string }>();
+        const title = normalizeText(body.title);
+        const category = normalizeText(body.category) || 'Default';
 
-    const existingArticle = await c.env.ADMIN_DB
-      .prepare('SELECT id FROM articles WHERE slug = ?')
-      .bind(slug)
-      .first<{ id: string }>();
+        if (!title) {
+            return c.json({ ok: false, message: 'Blog title is required' }, 400);
+        }
 
-    if (existingArticle) {
-      return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
+        const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
+        const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
+        const featuredImageUrl = await openaiClient.generateFeaturedImage(
+            blogContent.featured_image_prompt,
+            title,
+        );
+
+        const articleId = crypto.randomUUID();
+        const slug = slugify(title);
+        const now = new Date().toISOString();
+
+        const existingArticle = await c.env.ADMIN_DB
+            .prepare('SELECT id FROM articles WHERE slug = ?')
+            .bind(slug)
+            .first<{ id: string }>();
+
+        if (existingArticle) {
+            return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
+        }
+
+        await c.env.ADMIN_DB
+            .prepare(
+                'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            )
+            .bind(
+                articleId,
+                title,
+                slug,
+                blogContent.content.substring(0, 300),
+                blogContent.content,
+                category,
+                blogContent.seo_title,
+                blogContent.meta_description,
+                featuredImageUrl,
+                'draft',
+                session.id,
+                now,
+                now,
+            )
+            .run();
+
+        return c.json({
+            ok: true,
+            message: 'Article generated and saved successfully',
+            article: { id: articleId, title, slug, status: 'draft' },
+        });
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        console.error('Article generation error:', errorMessage);
+        return c.json({ ok: false, message: \`Failed to generate article: \${errorMessage}\` }, 500);
     }
-
-    await c.env.ADMIN_DB
-      .prepare(
-        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .bind(
-        articleId,
-        title,
-        slug,
-        blogContent.content.substring(0, 300),
-        blogContent.content,
-        category,
-        blogContent.seo_title,
-        blogContent.meta_description,
-        featuredImageUrl,
-        'draft',
-        session.id,
-        now,
-        now,
-      )
-      .run();
-
-    return c.json({
-      ok: true,
-      message: 'Article generated and saved successfully',
-      article: { id: articleId, title, slug, status: 'draft' },
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    console.error('Article generation error:', errorMessage);
-    return c.json({ ok: false, message: `Failed to generate article: ${errorMessage}` }, 500);
-  }
 });
 
+`;
 
-app.post('/api/logout', (c) => {
-  deleteCookie(c, SESSION_COOKIE, {
-    path: '/',
-  });
-  return c.json({ ok: true });
-});
+content = content.slice(0, oldApiStart) + NEW_API + content.slice(oldApiEnd);
 
-app.get('/profile', async (c) => {
-  const session = await readSession(c);
-
-  if (!session) {
-    deleteCookie(c, SESSION_COOKIE, {
-      path: '/',
-    });
-    return c.json({ ok: false, message: 'Unauthorized' }, 401);
-  }
-
-  return c.json({ ok: true, user: session });
-});
-
-export default app;
+writeFileSync('./src/index.ts', content, 'utf8');
+console.log('Done! Lines:', content.split('\n').length);
