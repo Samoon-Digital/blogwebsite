@@ -54,6 +54,17 @@ type ArticleMetricRow = {
   total: number | string;
 };
 
+type MonitoredWebsite = {
+  id: string;
+  label: string;
+  url: string;
+  category: string;
+  scan_frequency_hours: number;
+  last_scanned_at: string | null;
+  last_topic_found: string | null;
+  created_at: string;
+};
+
 type DashboardMetrics = {
   totalArticles: number;
   publishedArticles: number;
@@ -402,7 +413,7 @@ function loginPage(error = '') {
 function appShellPage(
   user: SessionUser,
   options: {
-    activeNav: 'dashboard' | 'articles' | 'categories' | 'seo';
+    activeNav: 'dashboard' | 'articles' | 'categories' | 'seo' | 'websites';
     pageTitle: string;
     eyebrow: string;
     title: string;
@@ -430,6 +441,7 @@ function appShellPage(
       ${navItem('/articles', 'Articles', options.activeNav === 'articles')}
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
       ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
+      ${navItem('/websites', 'Website Monitor', options.activeNav === 'websites')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
           <strong>${escapeHtml(user.displayName)}</strong>
@@ -674,6 +686,198 @@ function placeholderPage(
   });
 }
 
+function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = '') {
+  const siteRows = sites.length
+    ? sites
+      .map(
+        (s) => `
+      <tr>
+        <td>
+          <div style="font-weight:500;margin-bottom:2px;">${escapeHtml(s.label)}</div>
+          <div style="font-size:0.8125rem;color:var(--text-muted);word-break:break-all;">${escapeHtml(s.url)}</div>
+        </td>
+        <td><span class="badge badge-info">${escapeHtml(s.category)}</span></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input class="freq-input" data-id="${s.id}" type="number" value="${s.scan_frequency_hours}" min="1" max="168" style="width:64px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.875rem;" />
+            <span style="font-size:0.8125rem;color:var(--text-muted)">hrs</span>
+            <button class="btn btn-ghost" onclick="updateFrequency('${s.id}',this)" style="padding:4px 10px;font-size:0.8125rem;">Save</button>
+          </div>
+        </td>
+        <td style="font-size:0.8125rem;">
+          <div style="color:var(--text-muted)">${s.last_scanned_at ? escapeHtml(formatDateLabel(s.last_scanned_at)) : 'Never scanned'}</div>
+          ${s.last_topic_found ? `<div style="color:var(--text);margin-top:2px;">${escapeHtml(s.last_topic_found)}</div>` : ''}
+        </td>
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="scanNow('${s.id}',this)" style="padding:5px 12px;font-size:0.8125rem;">Scan Now</button>
+            <button class="btn btn-ghost" onclick="deleteSite('${s.id}',this)" style="padding:5px 12px;font-size:0.8125rem;color:#cc0000;border-color:#cc0000;">Delete</button>
+          </div>
+        </td>
+      </tr>`,
+      )
+      .join('')
+    : `<tr><td colspan="5"><div class="empty-state">Koi website add nahi ki gayi. Right panel se add karein.</div></td></tr>`;
+
+  return appShellPage(user, {
+    activeNav: 'websites',
+    pageTitle: 'Website Monitor — Samoon Digital',
+    eyebrow: 'Automation',
+    title: 'Website Monitor',
+    subtitle: 'AI websites scan karega, nayi content/jobs/notifications dhundhega aur evergreen blog likhega',
+    toolbar: '',
+    content: `
+      <div id="page-notice" class="notice ok" style="${message ? '' : 'display:none;'}">${escapeHtml(message)}</div>
+      <div class="cols-aside">
+        <div class="card">
+          <div class="card-header">
+            <h2>Monitored Websites (${sites.length})</h2>
+          </div>
+          <div style="overflow-x:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Website</th>
+                  <th>Category</th>
+                  <th>Scan Frequency</th>
+                  <th>Last Scan &amp; Topic</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="sites-tbody">${siteRows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="card">
+            <div class="card-header"><h2>Add Website</h2></div>
+            <div class="card-body">
+              <form class="form" id="add-site-form">
+                <div class="field">
+                  <label for="site-label">Label</label>
+                  <input id="site-label" placeholder="e.g. Indian Railways Recruitment" required />
+                </div>
+                <div class="field">
+                  <label for="site-url">URL</label>
+                  <input id="site-url" type="url" placeholder="https://indianrailways.gov.in" required />
+                </div>
+                <div class="field">
+                  <label for="site-category">Category</label>
+                  <select id="site-category">
+                    <option value="Government">Government</option>
+                    <option value="Railway">Railway</option>
+                    <option value="News">News</option>
+                    <option value="Education">Education</option>
+                    <option value="Finance">Finance</option>
+                    <option value="Technology">Technology</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="site-freq">Scan Every (hours)</label>
+                  <input id="site-freq" type="number" value="24" min="1" max="168" />
+                </div>
+                <button class="btn btn-primary btn-full" type="submit">Add Website</button>
+                <div class="notice" id="add-notice"></div>
+              </form>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2>How it works</h2></div>
+            <div class="card-body">
+              <div class="item-list">
+                <div class="item-row"><div><div class="title">1. Website add karein</div><div class="meta">URL, category aur scan frequency set karein</div></div></div>
+                <div class="item-row"><div><div class="title">2. Scan Now click karein</div><div class="meta">AI page visit karega, new content dhundhega</div></div></div>
+                <div class="item-row"><div><div class="title">3. Blog auto-generate</div><div class="meta">GPT-4 evergreen blog likhega, DALL-E image banayega</div></div></div>
+                <div class="item-row"><div><div class="title">4. Review &amp; Publish</div><div class="meta">Draft me save hoga, Articles se publish karein</div></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        document.getElementById('add-site-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const btn = e.target.querySelector('[type=submit]');
+          const notice = document.getElementById('add-notice');
+          btn.disabled = true;
+          btn.textContent = 'Adding...';
+          notice.className = 'notice';
+          notice.textContent = '';
+          try {
+            const res = await fetch('/api/websites', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                label: document.getElementById('site-label').value,
+                url: document.getElementById('site-url').value,
+                category: document.getElementById('site-category').value,
+                scan_frequency_hours: Number(document.getElementById('site-freq').value) || 24,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Failed to add');
+            window.location.reload();
+          } catch (err) {
+            notice.textContent = err.message;
+            notice.className = 'notice error';
+            btn.disabled = false;
+            btn.textContent = 'Add Website';
+          }
+        });
+
+        async function deleteSite(id, btn) {
+          if (!confirm('Is website ko monitor karna band karein?')) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/websites/' + id, { method: 'DELETE' });
+            if (!res.ok) { const d = await res.json(); throw new Error(d.message || 'Delete failed'); }
+            btn.closest('tr').remove();
+          } catch (err) { alert(err.message); btn.disabled = false; }
+        }
+
+        async function updateFrequency(id, btn) {
+          const input = document.querySelector('.freq-input[data-id="' + id + '"]');
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/websites/' + id, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scan_frequency_hours: Number(input.value) || 24 }),
+            });
+            if (!res.ok) { const d = await res.json(); throw new Error(d.message || 'Update failed'); }
+            btn.textContent = 'Saved!';
+            setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
+          } catch (err) { alert(err.message); btn.disabled = false; }
+        }
+
+        async function scanNow(id, btn) {
+          const origText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = 'Scanning... (2-3 min)';
+          const notice = document.getElementById('page-notice');
+          notice.style.display = 'none';
+          try {
+            const res = await fetch('/api/websites/' + id + '/scan', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Scan failed');
+            notice.textContent = data.message || 'Blog generated!';
+            notice.className = 'notice ok';
+            notice.style.display = '';
+            btn.textContent = 'Done!';
+            setTimeout(() => window.location.reload(), 2500);
+          } catch (err) {
+            notice.textContent = err.message;
+            notice.className = 'notice error';
+            notice.style.display = '';
+            btn.disabled = false;
+            btn.textContent = origText;
+          }
+        }
+      </script>
+    `,
+  });
+}
+
 app.get('/', async (c) => {
   const session = await readSession(c);
 
@@ -740,6 +944,15 @@ app.get('/seo', async (c) => {
       'Search metadata aur template presets ko article schema ke upar seedha mount kiya ja sakta hai.',
     ),
   );
+});
+
+app.get('/websites', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.redirect('/');
+  const sites = await queryAll<MonitoredWebsite>(
+    c.env.ADMIN_DB.prepare('SELECT * FROM monitored_websites ORDER BY datetime(created_at) DESC'),
+  );
+  return c.html(websitesPage(session, sites));
 });
 
 app.get('/api/me', async (c) => {
@@ -871,6 +1084,138 @@ app.post('/api/articles/generate', async (c) => {
   }
 });
 
+
+app.post('/api/websites', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+
+  const body = await c.req.json<{ label?: string; url?: string; category?: string; scan_frequency_hours?: number }>();
+  const label = normalizeText(body.label);
+  const url = normalizeText(body.url);
+  const category = normalizeText(body.category) || 'News';
+  const freq = Math.max(1, Math.min(168, Number(body.scan_frequency_hours) || 24));
+
+  if (!label || !url) return c.json({ ok: false, message: 'Label aur URL dono required hain' }, 400);
+
+  try { new URL(url); } catch { return c.json({ ok: false, message: 'Invalid URL format' }, 400); }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare('INSERT INTO monitored_websites (id, label, url, category, scan_frequency_hours, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, label, url, category, freq, now)
+    .run();
+
+  return c.json({ ok: true, id, label, url });
+});
+
+app.delete('/api/websites/:id', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  await c.env.ADMIN_DB.prepare('DELETE FROM monitored_websites WHERE id = ?').bind(id).run();
+  return c.json({ ok: true });
+});
+
+app.patch('/api/websites/:id', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{ scan_frequency_hours?: number }>();
+  const freq = Math.max(1, Math.min(168, Number(body.scan_frequency_hours) || 24));
+  await c.env.ADMIN_DB
+    .prepare('UPDATE monitored_websites SET scan_frequency_hours = ? WHERE id = ?')
+    .bind(freq, id)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.post('/api/websites/:id/scan', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+
+  const siteId = c.req.param('id');
+  const site = await c.env.ADMIN_DB
+    .prepare('SELECT * FROM monitored_websites WHERE id = ?')
+    .bind(siteId)
+    .first<MonitoredWebsite>();
+  if (!site) return c.json({ ok: false, message: 'Website not found' }, 404);
+
+  try {
+    const openaiKey = c.env.OPENAI_API_KEY;
+    if (!openaiKey) return c.json({ ok: false, message: 'OpenAI API key configured nahi hai' }, 500);
+    initOpenAIClient(openaiKey);
+    const openaiClient = getOpenAIClient();
+
+    // 1. Fetch website content
+    let pageText = '';
+    try {
+      const pageRes = await fetch(site.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SamoonDigital-Bot/1.0)' },
+      });
+      const html = await pageRes.text();
+      pageText = html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    } catch (fetchErr) {
+      const msg = fetchErr instanceof Error ? fetchErr.message : 'Network error';
+      return c.json({ ok: false, message: `Website fetch failed: ${msg}` }, 400);
+    }
+
+    if (pageText.length < 100) {
+      return c.json({ ok: false, message: 'Website ne kafi content return nahi kiya' }, 400);
+    }
+
+    // 2. AI finds the best blog topic from the page
+    const topicResult = await openaiClient.findBlogTopic(pageText, site.category);
+    const title = normalizeText(topicResult.blog_title);
+    const category = normalizeText(topicResult.category) || site.category;
+
+    if (!title) return c.json({ ok: false, message: 'AI koi suitable blog topic identify nahi kar saka' }, 400);
+
+    // 3. Check duplicate slug
+    const slug = slugify(title);
+    const existing = await c.env.ADMIN_DB
+      .prepare('SELECT id FROM articles WHERE slug = ?')
+      .bind(slug)
+      .first<{ id: string }>();
+    if (existing) return c.json({ ok: false, message: `"${title}" topic par blog already exist karta hai` }, 409);
+
+    // 4. Generate full blog content + featured image
+    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
+    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
+    const featuredImageUrl = await openaiClient.generateFeaturedImage(blogContent.featured_image_prompt, title);
+
+    // 5. Save article as draft
+    const articleId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await c.env.ADMIN_DB
+      .prepare('INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(articleId, title, slug, blogContent.content.substring(0, 300), blogContent.content, category, blogContent.seo_title, blogContent.meta_description, featuredImageUrl, 'draft', session.id, now, now)
+      .run();
+
+    // 6. Update website scan record
+    await c.env.ADMIN_DB
+      .prepare('UPDATE monitored_websites SET last_scanned_at = ?, last_topic_found = ? WHERE id = ?')
+      .bind(now, title, siteId)
+      .run();
+
+    return c.json({
+      ok: true,
+      message: `Blog generate ho gaya: "${title}" — Draft me save hua`,
+      article: { id: articleId, title, slug },
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Website scan error:', msg);
+    return c.json({ ok: false, message: `Scan failed: ${msg}` }, 500);
+  }
+});
 
 app.post('/api/logout', (c) => {
   deleteCookie(c, SESSION_COOKIE, {

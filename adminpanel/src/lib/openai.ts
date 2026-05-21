@@ -19,6 +19,12 @@ export interface GeneratedImage {
     alt_text: string;
 }
 
+export interface BlogTopicResult {
+    blog_title: string;
+    category: string;
+    reason: string;
+}
+
 class OpenAIClient {
     private apiKey: string;
     private baseUrl = 'https://api.openai.com/v1';
@@ -130,6 +136,49 @@ Requirements:
         }
 
         return imageUrl;
+    }
+
+    async findBlogTopic(pageText: string, categoryHint: string): Promise<BlogTopicResult> {
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`,
+            },
+            body: JSON.stringify({
+                model: 'gpt-4-turbo',
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You are an expert Indian content strategist. Analyze the given webpage text and identify the single most important, timely topic for an evergreen blog post targeting Indian readers. Focus on: job vacancies, government notifications, sarkari aadesh, government schemes, exam notifications, or major India news events. Return JSON with keys: blog_title (compelling Hindi or English headline), category (one of: Government, Railway, Education, Finance, Technology, News), reason (1 sentence why this topic is valuable).',
+                    },
+                    {
+                        role: 'user',
+                        content: `Category hint: ${categoryHint}\n\nWebpage content:\n${pageText.substring(0, 6000)}`,
+                    },
+                ],
+                temperature: 0.5,
+                max_tokens: 400,
+                response_format: { type: 'json_object' },
+            }),
+        });
+
+        if (!response.ok) {
+            const error = (await response.json()) as { error?: { message?: string } };
+            throw new Error(`OpenAI API error: ${error.error?.message || 'Unknown error'}`);
+        }
+
+        const data = (await response.json()) as {
+            choices: Array<{ message: { content: string } }>;
+        };
+        const content = data.choices[0]?.message?.content;
+        if (!content) throw new Error('No topic identified from OpenAI');
+
+        try {
+            return JSON.parse(content) as BlogTopicResult;
+        } catch {
+            throw new Error('Failed to parse blog topic response');
+        }
     }
 }
 
