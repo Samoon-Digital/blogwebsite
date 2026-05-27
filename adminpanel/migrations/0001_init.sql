@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
 INSERT INTO admin_users (id, username, display_name, password_hash, role)
 VALUES (
   'super-admin',
-  'samoondgital',
+  'samoondigital',
   'Samoon Digital',
   'fb038747ce88efce26564e515f926cf8ca6f9844a6311c97a436e11cf2251e60',
   'super_admin'

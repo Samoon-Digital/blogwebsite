@@ -11,7 +11,7 @@ Cloudflare Workers + D1 based admin panel for the blog system.
 
 ## Initial credentials
 
-- Admin ID: `samoondgital`
+- Admin ID: `samoondigital`
 - Password: `Samoon@9696`
 
 ## Local setup
@@ -21,11 +21,14 @@ Cloudflare Workers + D1 based admin panel for the blog system.
 2. Create a local D1 database and apply migrations:
    `npx wrangler d1 create samoondgital_admin`
    `npx wrangler d1 migrations apply ADMIN_DB --local`
-3. Update `wrangler.toml` with the real D1 database ID.
-4. Start the worker:
+3. Add local secrets in `.dev.vars`:
+   `OPENAI_API_KEY`, `OPENAI_TRACKING_ID`, `OPENAI_TEXT_MODEL=gpt-5.5`, `OPENAI_IMAGE_MODEL=gpt-image-2`
+4. Update `wrangler.toml` with the real D1 database ID.
+5. Start the worker:
    `npm run dev`
 
 ## Production notes
 
 - Replace `SESSION_SECRET` in `wrangler.toml` with a real secret before deploy.
-- Later we can replace the placeholder dashboard with article CRUD, AI draft generation, and SEO tools.
+- Set `OPENAI_API_KEY` and `OPENAI_TRACKING_ID` as Cloudflare Worker secrets before deploy.
+- Article generation, website scanning, GPT-5.5 blog writing, and GPT Image featured images are wired in.

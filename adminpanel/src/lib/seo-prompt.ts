@@ -165,7 +165,7 @@ Return ONLY valid JSON with this exact structure:
 {
   "seo_title": "Title optimized for search (50-60 chars)",
   "meta_description": "Meta description (150-160 chars)",
-  "featured_image_prompt": "Detailed prompt for DALL-E 3 to generate image (150+ words describing visual style, composition, subject matter)",
+  "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
   "content": "<h1>Main Title</h1><p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content...</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>Related Articles</h3><ul><li><a href=\"/articles/slug\">Article Title</a></li></ul></div>",
   "schema_markup": {

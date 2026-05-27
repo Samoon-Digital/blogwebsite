@@ -7,6 +7,9 @@ type Bindings = {
   ADMIN_DB: D1Database;
   SESSION_SECRET: string;
   OPENAI_API_KEY: string;
+  OPENAI_TRACKING_ID?: string;
+  OPENAI_TEXT_MODEL?: string;
+  OPENAI_IMAGE_MODEL?: string;
 };
 
 type AdminUserRow = {
@@ -367,7 +370,7 @@ function loginPage(error = '') {
       <form class="form" id="login-form">
         <div class="field">
           <label for="username">Username</label>
-          <input id="username" name="username" autocomplete="username" placeholder="samoondgital" required />
+          <input id="username" name="username" autocomplete="username" placeholder="samoondigital" required />
         </div>
         <div class="field">
           <label for="password">Password</label>
@@ -571,7 +574,7 @@ function aiGenerationPage(user: SessionUser) {
     pageTitle: 'Generate Article — Samoon Digital',
     eyebrow: 'AI Generator',
     title: 'Generate Article with AI',
-    subtitle: 'Enter a title and category. GPT-4 Turbo writes a full SEO-optimized article and DALL-E 3 creates the featured image.',
+    subtitle: 'Enter a title and category. GPT-5.5 writes a full SEO-optimized article and GPT Image creates the featured image.',
     toolbar: `<a class="btn btn-secondary" href="/articles">Back to Articles</a>`,
     content: `
       <div class="cols-aside">
@@ -609,7 +612,7 @@ function aiGenerationPage(user: SessionUser) {
               <div class="item-list">
                 <div class="item-row"><div class="title">SEO-optimized blog content</div></div>
                 <div class="item-row"><div class="title">Schema markup (FAQ, Article)</div></div>
-                <div class="item-row"><div class="title">DALL-E 3 featured image</div></div>
+                <div class="item-row"><div class="title">GPT Image featured image</div></div>
                 <div class="item-row"><div class="title">Meta title &amp; description</div></div>
               </div>
             </div>
@@ -787,7 +790,7 @@ function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = ''
               <div class="item-list">
                 <div class="item-row"><div><div class="title">1. Website add karein</div><div class="meta">URL, category aur scan frequency set karein</div></div></div>
                 <div class="item-row"><div><div class="title">2. Scan Now click karein</div><div class="meta">AI page visit karega, new content dhundhega</div></div></div>
-                <div class="item-row"><div><div class="title">3. Blog auto-generate</div><div class="meta">GPT-4 evergreen blog likhega, DALL-E image banayega</div></div></div>
+                <div class="item-row"><div><div class="title">3. Blog auto-generate</div><div class="meta">GPT-5.5 evergreen blog likhega, GPT Image featured image banayega</div></div></div>
                 <div class="item-row"><div><div class="title">4. Review &amp; Publish</div><div class="meta">Draft me save hoga, Articles se publish karein</div></div></div>
               </div>
             </div>
@@ -966,46 +969,54 @@ app.get('/api/me', async (c) => {
 });
 
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
-  const { username, password } = await c.req.json<{
-    username?: string;
-    password?: string;
-  }>();
+  try {
+    const body = await c.req.json<{
+      username?: string;
+      password?: string;
+    }>();
 
-  if (!username || !password) {
-    return c.json({ ok: false, message: 'Username and password are required' }, 400);
+    const { username, password } = body;
+
+    if (!username || !password) {
+      return c.json({ ok: false, message: 'Username and password are required' }, 400);
+    }
+
+    const db = c.env.ADMIN_DB;
+    const user = await db
+      .prepare('SELECT * FROM admin_users WHERE username = ?')
+      .bind(username)
+      .first<AdminUserRow>();
+
+    if (!user) {
+      return c.json({ ok: false, message: 'Invalid username or password' }, 401);
+    }
+
+    const passwordHash = await sha256Hex(password);
+    if (passwordHash !== user.password_hash) {
+      return c.json({ ok: false, message: 'Invalid username or password' }, 401);
+    }
+
+    const session: SessionUser = {
+      id: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      role: user.role,
+      exp: Date.now() + SESSION_TTL_MS,
+    };
+
+    await setSignedCookie(c, SESSION_COOKIE, JSON.stringify(session), c.env.SESSION_SECRET, {
+      httpOnly: true,
+      sameSite: 'Lax',
+      path: '/',
+      secure: new URL(c.req.url).protocol === 'https:',
+    });
+
+    return c.json({ ok: true, user: session });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Login failed';
+    console.error('Login error:', errorMsg);
+    return c.json({ ok: false, message: 'Internal server error: ' + errorMsg }, 500);
   }
-
-  const db = c.env.ADMIN_DB;
-  const user = await db
-    .prepare('SELECT * FROM admin_users WHERE username = ?')
-    .bind(username)
-    .first<AdminUserRow>();
-
-  if (!user) {
-    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
-  }
-
-  const passwordHash = await sha256Hex(password);
-  if (passwordHash !== user.password_hash) {
-    return c.json({ ok: false, message: 'Invalid username or password' }, 401);
-  }
-
-  const session: SessionUser = {
-    id: user.id,
-    username: user.username,
-    displayName: user.display_name,
-    role: user.role,
-    exp: Date.now() + SESSION_TTL_MS,
-  };
-
-  await setSignedCookie(c, SESSION_COOKIE, JSON.stringify(session), c.env.SESSION_SECRET, {
-    httpOnly: true,
-    sameSite: 'Lax',
-    path: '/',
-    secure: new URL(c.req.url).protocol === 'https:',
-  });
-
-  return c.json({ ok: true, user: session });
 });
 
 app.post('/api/articles/generate', async (c) => {
@@ -1020,7 +1031,12 @@ app.post('/api/articles/generate', async (c) => {
     if (!openaiKey) {
       return c.json({ ok: false, message: 'OpenAI API key not configured' }, 500);
     }
-    initOpenAIClient(openaiKey);
+    initOpenAIClient({
+      apiKey: openaiKey,
+      trackingId: c.env.OPENAI_TRACKING_ID,
+      textModel: c.env.OPENAI_TEXT_MODEL,
+      imageModel: c.env.OPENAI_IMAGE_MODEL,
+    });
     const openaiClient = getOpenAIClient();
 
     const body = await c.req.json<{ title?: string; category?: string }>();
@@ -1146,7 +1162,12 @@ app.post('/api/websites/:id/scan', async (c) => {
   try {
     const openaiKey = c.env.OPENAI_API_KEY;
     if (!openaiKey) return c.json({ ok: false, message: 'OpenAI API key configured nahi hai' }, 500);
-    initOpenAIClient(openaiKey);
+    initOpenAIClient({
+      apiKey: openaiKey,
+      trackingId: c.env.OPENAI_TRACKING_ID,
+      textModel: c.env.OPENAI_TEXT_MODEL,
+      imageModel: c.env.OPENAI_IMAGE_MODEL,
+    });
     const openaiClient = getOpenAIClient();
 
     // 1. Fetch website content

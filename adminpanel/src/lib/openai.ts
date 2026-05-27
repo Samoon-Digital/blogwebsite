@@ -1,7 +1,17 @@
 /**
  * OpenAI Integration
- * Handles blog generation with GPT-4 Turbo and image generation with DALL-E 3
+ * Handles blog generation with GPT-5.5 and image generation with GPT Image.
  */
+
+const DEFAULT_TEXT_MODEL = 'gpt-5.5';
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
+
+type OpenAIClientConfig = {
+    apiKey: string;
+    trackingId?: string;
+    textModel?: string;
+    imageModel?: string;
+};
 
 export interface GeneratedBlogContent {
     seo_title: string;
@@ -27,13 +37,41 @@ export interface BlogTopicResult {
 
 class OpenAIClient {
     private apiKey: string;
+    private trackingId?: string;
+    private textModel: string;
+    private imageModel: string;
     private baseUrl = 'https://api.openai.com/v1';
 
-    constructor(apiKey: string) {
-        if (!apiKey) {
+    constructor(config: OpenAIClientConfig) {
+        if (!config.apiKey) {
             throw new Error('OPENAI_API_KEY environment variable is not set');
         }
-        this.apiKey = apiKey;
+        this.apiKey = config.apiKey;
+        this.trackingId = config.trackingId;
+        this.textModel = config.textModel || DEFAULT_TEXT_MODEL;
+        this.imageModel = config.imageModel || DEFAULT_IMAGE_MODEL;
+    }
+
+    private headers() {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+        };
+
+        if (this.trackingId) {
+            headers['X-Samoon-Tracking-ID'] = this.trackingId;
+        }
+
+        return headers;
+    }
+
+    private async readApiError(response: Response, serviceName: string) {
+        try {
+            const error = (await response.json()) as { error?: { message?: string } };
+            return `${serviceName} API error: ${error.error?.message || 'Unknown error'}`;
+        } catch {
+            return `${serviceName} API error: HTTP ${response.status}`;
+        }
     }
 
     async generateBlogContent(
@@ -42,12 +80,9 @@ class OpenAIClient {
     ): Promise<GeneratedBlogContent> {
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`,
-            },
+            headers: this.headers(),
             body: JSON.stringify({
-                model: 'gpt-4-turbo',
+                model: this.textModel,
                 messages: [
                     {
                         role: 'system',
@@ -59,16 +94,13 @@ class OpenAIClient {
                     },
                 ],
                 temperature: 0.7,
-                max_tokens: 3000,
+                max_completion_tokens: 6000,
                 response_format: { type: 'json_object' },
             }),
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(
-                `OpenAI API error: ${error.error?.message || 'Unknown error'}`,
-            );
+            throw new Error(await this.readApiError(response, 'OpenAI'));
         }
 
         const data = (await response.json()) as {
@@ -105,48 +137,45 @@ Requirements:
 
         const response = await fetch(`${this.baseUrl}/images/generations`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`,
-            },
+            headers: this.headers(),
             body: JSON.stringify({
-                model: 'dall-e-3',
+                model: this.imageModel,
                 prompt: imagePrompt,
                 n: 1,
-                size: '1792x1024',
-                quality: 'standard',
-                style: 'natural',
+                size: '1536x864',
+                quality: 'medium',
+                output_format: 'jpeg',
+                output_compression: 82,
             }),
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(
-                `DALL-E API error: ${error.error?.message || 'Unknown error'}`,
-            );
+            throw new Error(await this.readApiError(response, 'GPT Image'));
         }
 
         const data = (await response.json()) as {
-            data: Array<{ url: string }>;
+            data: Array<{ url?: string; b64_json?: string }>;
         };
         const imageUrl = data.data[0]?.url;
+        const imageBase64 = data.data[0]?.b64_json;
 
-        if (!imageUrl) {
-            throw new Error('No image generated from DALL-E');
+        if (imageUrl) {
+            return imageUrl;
         }
 
-        return imageUrl;
+        if (imageBase64) {
+            return `data:image/jpeg;base64,${imageBase64}`;
+        }
+
+        throw new Error('No image generated from GPT Image');
     }
 
     async findBlogTopic(pageText: string, categoryHint: string): Promise<BlogTopicResult> {
         const response = await fetch(`${this.baseUrl}/chat/completions`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`,
-            },
+            headers: this.headers(),
             body: JSON.stringify({
-                model: 'gpt-4-turbo',
+                model: this.textModel,
                 messages: [
                     {
                         role: 'system',
@@ -158,14 +187,13 @@ Requirements:
                     },
                 ],
                 temperature: 0.5,
-                max_tokens: 400,
+                max_completion_tokens: 800,
                 response_format: { type: 'json_object' },
             }),
         });
 
         if (!response.ok) {
-            const error = (await response.json()) as { error?: { message?: string } };
-            throw new Error(`OpenAI API error: ${error.error?.message || 'Unknown error'}`);
+            throw new Error(await this.readApiError(response, 'OpenAI'));
         }
 
         const data = (await response.json()) as {
@@ -183,12 +211,21 @@ Requirements:
 }
 
 let clientInstance: OpenAIClient | null = null;
+let clientSignature = '';
 
-export function initOpenAIClient(apiKey: string): OpenAIClient {
-    if (clientInstance) {
+export function initOpenAIClient(config: OpenAIClientConfig): OpenAIClient {
+    const signature = [
+        config.apiKey,
+        config.trackingId || '',
+        config.textModel || DEFAULT_TEXT_MODEL,
+        config.imageModel || DEFAULT_IMAGE_MODEL,
+    ].join(':');
+
+    if (clientInstance && clientSignature === signature) {
         return clientInstance;
     }
-    clientInstance = new OpenAIClient(apiKey);
+    clientSignature = signature;
+    clientInstance = new OpenAIClient(config);
     return clientInstance;
 }
 

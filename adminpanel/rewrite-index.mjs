@@ -159,7 +159,7 @@ function loginPage(error = '') {
       <form class="form" id="login-form">
         <div class="field">
           <label for="username">Username</label>
-          <input id="username" name="username" autocomplete="username" placeholder="samoondgital" required />
+          <input id="username" name="username" autocomplete="username" placeholder="samoondigital" required />
         </div>
         <div class="field">
           <label for="password">Password</label>
