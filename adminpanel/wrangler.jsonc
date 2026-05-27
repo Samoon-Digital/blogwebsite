@@ -2,8 +2,21 @@
     "name": "samoondgital-adminpanel",
     "compatibility_date": "2026-05-19",
     "main": "src/index.ts",
+    "routes": [
+        {
+            "pattern": "admin.laxy.in",
+            "custom_domain": true
+        },
+        {
+            "pattern": "laxy.in/*",
+            "zone_name": "laxy.in"
+        },
+        {
+            "pattern": "www.laxy.in/*",
+            "zone_name": "laxy.in"
+        }
+    ],
     "vars": {
-        "SESSION_SECRET": "local-testing-secret",
         "OPENAI_TEXT_MODEL": "gpt-5.5",
         "OPENAI_IMAGE_MODEL": "gpt-image-2"
     },

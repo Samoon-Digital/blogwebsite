@@ -29,6 +29,6 @@ Cloudflare Workers + D1 based admin panel for the blog system.
 
 ## Production notes
 
-- Replace `SESSION_SECRET` in `wrangler.toml` with a real secret before deploy.
-- Set `OPENAI_API_KEY` and `OPENAI_TRACKING_ID` as Cloudflare Worker secrets before deploy.
+- `SESSION_SECRET`, `OPENAI_API_KEY`, and `OPENAI_TRACKING_ID` should stay as Worker secrets, not plain vars.
+- `admin.laxy.in` serves the admin panel. `laxy.in` and `www.laxy.in` serve the public blog.
 - Article generation, website scanning, GPT-5.5 blog writing, and GPT Image featured images are wired in.

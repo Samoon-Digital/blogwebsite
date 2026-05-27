@@ -37,8 +37,23 @@ type ArticleRow = {
   category: string | null;
   seo_title: string | null;
   seo_description: string | null;
+  featured_image_url?: string | null;
   status: string;
   author_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type PublicArticleRow = {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string | null;
+  content: string;
+  category: string | null;
+  seo_title: string | null;
+  seo_description: string | null;
+  featured_image_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -242,9 +257,26 @@ async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
 async function readArticles(db: D1Database) {
   return queryAll<ArticleRow>(
     db.prepare(
-      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
+      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
     ),
   );
+}
+
+async function readPublishedArticles(db: D1Database) {
+  return queryAll<PublicArticleRow>(
+    db.prepare(
+      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24",
+    ),
+  );
+}
+
+async function readPublishedArticleBySlug(db: D1Database, slug: string) {
+  return db
+    .prepare(
+      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, created_at, updated_at FROM articles WHERE slug = ? AND status = 'published' LIMIT 1",
+    )
+    .bind(slug)
+    .first<PublicArticleRow>();
 }
 
 function shellStyles() {
@@ -349,6 +381,154 @@ function shellStyles() {
 
 function navItem(href: string, label: string, active: boolean) {
   return `<a class="nav-link${active ? ' active' : ''}" href="${href}">${label}</a>`;
+}
+
+function publicStyles() {
+  return `
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#121212; --muted:#666; --border:#e6e2dc; --paper:#fff; --soft:#f8f7f4; --accent:#0f6b57; }
+    html, body { min-height: 100%; background: var(--paper); color: var(--text); }
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
+    .site-header { border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.94); position: sticky; top: 0; z-index: 10; }
+    .wrap { width: min(1080px, calc(100% - 32px)); margin: 0 auto; }
+    .nav { height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { font-weight: 800; font-size: 1.05rem; letter-spacing: 0; }
+    .nav-links { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 0.9rem; }
+    .hero { padding: 56px 0 34px; background: var(--soft); border-bottom: 1px solid var(--border); }
+    .hero h1 { font-size: clamp(2rem, 5vw, 4.2rem); line-height: 1.02; letter-spacing: 0; max-width: 780px; }
+    .hero p { margin-top: 14px; color: var(--muted); line-height: 1.7; max-width: 640px; font-size: 1.02rem; }
+    .grid { padding: 30px 0 56px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .post-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; display: grid; align-content: start; }
+    .post-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
+    .post-card-body { padding: 16px; display: grid; gap: 10px; }
+    .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+    .post-card h2 { font-size: 1.05rem; line-height: 1.35; letter-spacing: 0; }
+    .post-card p { color: var(--muted); line-height: 1.6; font-size: 0.9rem; }
+    .date { color: #888; font-size: 0.82rem; }
+    .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
+    .article { padding: 34px 0 64px; }
+    .article-head { display: grid; gap: 14px; padding-bottom: 24px; }
+    .article h1 { max-width: 900px; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.08; letter-spacing: 0; }
+    .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1.05rem; }
+    .featured { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); margin: 8px 0 28px; background: var(--soft); }
+    .content { max-width: 760px; font-size: 1.03rem; line-height: 1.8; }
+    .content h1, .content h2, .content h3 { line-height: 1.25; margin: 1.6em 0 0.55em; letter-spacing: 0; }
+    .content p, .content ul, .content ol, .content table, .content blockquote { margin: 0 0 1.05em; }
+    .content ul, .content ol { padding-left: 1.4em; }
+    .content table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    .content td, .content th { border: 1px solid var(--border); padding: 9px; text-align: left; }
+    .content a { color: var(--accent); text-decoration: underline; }
+    .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
+    @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } .nav { height: auto; padding: 14px 0; align-items: flex-start; flex-direction: column; } .hero { padding-top: 36px; } }
+  `;
+}
+
+function publicShell(title: string, description: string, content: string) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}" />
+  <style>${publicStyles()}</style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="/">Laxy.in</a>
+      <nav class="nav-links">
+        <a href="/">Latest</a>
+        <a href="https://admin.laxy.in">Admin</a>
+      </nav>
+    </div>
+  </header>
+  ${content}
+  <footer class="site-footer"><div class="wrap">Laxy.in &copy; ${new Date().getFullYear()}</div></footer>
+</body>
+</html>`;
+}
+
+function publicHomePage(articles: PublicArticleRow[]) {
+  const cards = articles.length
+    ? `<section class="wrap grid">${articles
+      .map((article) => {
+        const image = article.featured_image_url
+          ? `<img src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.title)}" loading="lazy" />`
+          : '';
+        return `<a class="post-card" href="/${escapeHtml(article.slug)}">
+          ${image}
+          <div class="post-card-body">
+            <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
+            <h2>${escapeHtml(article.title)}</h2>
+            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Laxy.in.')}</p>
+            <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
+          </div>
+        </a>`;
+      })
+      .join('')}</section>`
+    : `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`;
+
+  return publicShell(
+    'Laxy.in - Latest Blogs and Updates',
+    'Laxy.in par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
+    `<section class="hero"><div class="wrap"><h1>Latest useful updates, explained simply.</h1><p>Jobs, government notifications, education, finance, technology aur daily-life guides ko Hinglish mein clear format mein padhein.</p></div></section>${cards}`,
+  );
+}
+
+function publicArticlePage(article: PublicArticleRow) {
+  const image = article.featured_image_url
+    ? `<img class="featured" src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.title)}" />`
+    : '';
+
+  return publicShell(
+    article.seo_title || article.title,
+    article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
+    `<main class="wrap article">
+      <header class="article-head">
+        <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
+        <h1>${escapeHtml(article.title)}</h1>
+        <p class="dek">${escapeHtml(article.excerpt || article.seo_description || '')}</p>
+        <div class="date">Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
+      </header>
+      ${image}
+      <article class="content">${article.content}</article>
+    </main>`,
+  );
+}
+
+async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
+  const url = new URL(c.req.url);
+
+  if (c.req.method !== 'GET') {
+    return c.text('Not found', 404);
+  }
+
+  if (url.pathname === '/' || url.pathname === '') {
+    const articles = await readPublishedArticles(c.env.ADMIN_DB);
+    return c.html(publicHomePage(articles));
+  }
+
+  const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''));
+  if (!slug || slug.includes('/')) {
+    return c.text('Not found', 404);
+  }
+
+  const article = await readPublishedArticleBySlug(c.env.ADMIN_DB, slug);
+  if (!article) {
+    return c.html(
+      publicShell(
+        'Article not found - Laxy.in',
+        'The requested article could not be found.',
+        '<main class="wrap empty">Article nahi mila. <a href="/">Latest blogs</a> dekhein.</main>',
+      ),
+      404,
+    );
+  }
+
+  return c.html(publicArticlePage(article));
 }
 
 function loginPage(error = '') {
@@ -544,6 +724,12 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
             </div>
             <p>${escapeHtml(a.excerpt || 'No excerpt available.')}</p>
             <div class="article-card-meta">Updated ${escapeHtml(formatDateLabel(a.updated_at))}</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              ${a.status === 'published'
+            ? `<a class="btn btn-secondary" href="https://laxy.in/${escapeHtml(a.slug)}" target="_blank" rel="noopener">View Live</a>
+                   <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Move to Draft</button>`
+            : `<button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
+            </div>
           </article>`,
       )
       .join('')}
@@ -563,6 +749,27 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
         ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
         ${articleCards}
       </div>
+      <script>
+        async function updateArticleStatus(id, status, btn) {
+          const originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = status === 'published' ? 'Publishing...' : 'Saving...';
+          try {
+            const res = await fetch('/api/articles/' + id + '/status', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Status update failed');
+            window.location.href = '/articles?status=' + encodeURIComponent(status);
+          } catch (err) {
+            alert(err.message || 'Status update failed');
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        }
+      </script>
     `,
   });
 }
@@ -881,6 +1088,16 @@ function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = ''
   });
 }
 
+app.use('*', async (c, next) => {
+  const host = (c.req.header('host') || new URL(c.req.url).hostname).split(':')[0].toLowerCase();
+
+  if (host === 'laxy.in' || host === 'www.laxy.in') {
+    return handlePublicSite(c);
+  }
+
+  await next();
+});
+
 app.get('/', async (c) => {
   const session = await readSession(c);
 
@@ -901,7 +1118,13 @@ app.get('/articles', async (c) => {
 
   const url = new URL(c.req.url);
   const articles = await readArticles(c.env.ADMIN_DB);
-  const message = url.searchParams.get('created') ? 'Article D1 database me save ho gaya.' : '';
+  const message = url.searchParams.get('created')
+    ? 'Article D1 database me save ho gaya.'
+    : url.searchParams.get('status') === 'published'
+      ? 'Article live publish ho gaya.'
+      : url.searchParams.get('status') === 'draft'
+        ? 'Article draft me move ho gaya.'
+        : '';
   return c.html(articlesPage(session, articles, message));
 });
 
@@ -966,6 +1189,31 @@ app.get('/api/me', async (c) => {
   }
 
   return c.json({ ok: true, user: session });
+});
+
+app.patch('/api/articles/:id/status', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{ status?: string }>();
+  const status = normalizeText(body.status);
+  const allowedStatuses = new Set(['draft', 'review', 'published']);
+
+  if (!allowedStatuses.has(status)) {
+    return c.json({ ok: false, message: 'Invalid article status' }, 400);
+  }
+
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare('UPDATE articles SET status = ?, updated_at = ? WHERE id = ?')
+    .bind(status, now, id)
+    .run();
+
+  return c.json({ ok: true, status });
 });
 
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
