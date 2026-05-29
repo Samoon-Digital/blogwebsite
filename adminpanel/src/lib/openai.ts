@@ -154,6 +154,93 @@ class OpenAIClient {
         }
     }
 
+    private extractJsonString(raw: string) {
+        const cleaned = raw
+            .trim()
+            .replace(/^```(?:json)?\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+        const start = cleaned.indexOf('{');
+        if (start === -1) {
+            return '';
+        }
+
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = start; index < cleaned.length; index += 1) {
+            const char = cleaned[index];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (char === '\\') {
+                escaped = true;
+                continue;
+            }
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) {
+                continue;
+            }
+            if (char === '{') {
+                depth += 1;
+            } else if (char === '}') {
+                depth -= 1;
+                if (depth === 0) {
+                    return cleaned.slice(start, index + 1);
+                }
+            }
+        }
+
+        return cleaned.slice(start);
+    }
+
+    private async repairJsonResponse<T>(raw: string, label: string, fallback: T): Promise<T> {
+        try {
+            return this.parseJson<T>(this.extractJsonString(raw) || raw, label);
+        } catch {
+            // Continue to repair pass.
+        }
+
+        try {
+            const repaired = await this.createJsonResponse(
+                'You repair malformed model output into valid JSON. Return valid JSON only. No markdown.',
+                `Repair this ${label} into a JSON object with the same keys and concise string values:\n${raw.slice(0, 6000)}`,
+                1400,
+            );
+            return this.parseJson<T>(repaired, label);
+        } catch {
+            return fallback;
+        }
+    }
+
+    private scalarText(value: unknown, fallback = ''): string {
+        if (typeof value === 'string') {
+            return value.trim() || fallback;
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+            return String(value);
+        }
+        if (Array.isArray(value)) {
+            return value
+                .map((item) => this.scalarText(item))
+                .filter(Boolean)
+                .join('; ')
+                .trim() || fallback;
+        }
+        if (value && typeof value === 'object') {
+            return Object.values(value as Record<string, unknown>)
+                .map((item) => this.scalarText(item))
+                .filter(Boolean)
+                .join('; ')
+                .trim() || fallback;
+        }
+        return fallback;
+    }
+
     private async createJsonResponse(systemPrompt: string, userPrompt: string, maxOutputTokens: number) {
         const response = await fetch(`${this.baseUrl}/responses`, {
             method: 'POST',
@@ -245,7 +332,7 @@ class OpenAIClient {
             input.sourceUrl ? `Source/link: ${input.sourceUrl}` : '',
             input.title ? `Sample title/headline: ${input.title}` : '',
             input.articleText ? `Sample article/content:\n${input.articleText.slice(0, 9000)}` : '',
-            'Analyze this sample for reusable editorial training. Return JSON with keys: title_style, article_style, image_style, linking_style, summary. Focus on how future articles in this category should be titled, structured, linked, and what featured images should look like.',
+            'Analyze this sample for reusable editorial training. Return JSON with ONLY these string keys: title_style, image_style, summary. title_style should explain headline/title pattern. image_style should be a reusable featured image generation prompt/style. Do not return nested objects or arrays.',
         ]
             .filter(Boolean)
             .join('\n\n');
@@ -262,7 +349,7 @@ class OpenAIClient {
             body: JSON.stringify({
                 model: this.textModel,
                 instructions:
-                    'You are a Hindi news/blog editorial trainer for Laxy.in. Extract reusable writing, headline, linking, and image style guidance from user-provided examples. Return valid JSON only.',
+                    'You are a Hindi news/blog editorial trainer for Laxy.in. Extract only reusable headline/title style and featured image prompt style. Return valid JSON only with string keys: title_style, image_style, summary.',
                 input: [
                     {
                         role: 'user',
@@ -280,17 +367,39 @@ class OpenAIClient {
             throw new Error(await this.readApiError(response, 'OpenAI'));
         }
 
-        const parsed = this.parseJson<TrainingAnalysisResult>(
-            this.extractResponsesText(await response.json(), 'OpenAI'),
+        const rawText = this.extractResponsesText(await response.json(), 'OpenAI');
+        const parsed = await this.repairJsonResponse<TrainingAnalysisResult>(
+            rawText,
             'OpenAI training analysis',
+            {
+                title_style: `Use concise Hindi/Hinglish headlines inspired by: ${input.title || input.sourceUrl || input.category}`,
+                article_style: '',
+                image_style: input.imageDataUrl
+                    ? 'Use the source featured image direction: clean editorial composition, one clear subject, mobile-safe crop.'
+                    : 'Use clean editorial featured images with one clear subject, low noise, and Google Discover-safe 16:9 framing.',
+                linking_style: '',
+                summary: 'Fallback training analysis saved from source content.',
+            },
+        );
+
+        const parsedRecord = parsed as unknown as Record<string, unknown>;
+        const titleStyle = this.scalarText(
+            parsedRecord.title_style,
+            `Use concise Hindi/Hinglish headlines inspired by: ${input.title || input.sourceUrl || input.category}`,
+        );
+        const imageStyle = this.scalarText(
+            parsedRecord.image_style,
+            input.imageDataUrl
+                ? 'Featured image prompt: clean editorial composition inspired by the source image, one clear subject, mobile-safe crop, no text overlay.'
+                : 'Featured image prompt: clean editorial image, one clear subject, low visual noise, Google Discover-safe 16:9 framing, no text overlay.',
         );
 
         return {
-            title_style: parsed.title_style || 'Short Hindi/Hinglish factual headline style',
-            article_style: parsed.article_style || 'Clear Hindi/Hinglish news explainer style',
-            image_style: parsed.image_style || 'Clean editorial featured image style',
-            linking_style: parsed.linking_style || 'Use helpful internal and authoritative external links naturally',
-            summary: parsed.summary || 'Reusable training sample saved.',
+            title_style: titleStyle,
+            article_style: '',
+            image_style: imageStyle,
+            linking_style: '',
+            summary: this.scalarText(parsedRecord.summary, 'Headline and image prompt training saved.'),
         };
     }
 

@@ -374,6 +374,25 @@ function fileToDataUrl(file: File, bytes: ArrayBuffer) {
   return `data:${contentType};base64,${btoa(binary)}`;
 }
 
+function dbText(value: unknown, fallback: string | null = null): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    const text: string = value.map((item) => dbText(item, '')).filter(Boolean).join('; ');
+    return text || fallback;
+  }
+  if (value && typeof value === 'object') {
+    const text: string = Object.values(value as Record<string, unknown>).map((item) => dbText(item, '')).filter(Boolean).join('; ');
+    return text || fallback;
+  }
+  return fallback;
+}
+
 function normalizeArticleContent(content: string) {
   return content
     .replace(/^\s*<h1\b[^>]*>[\s\S]*?<\/h1>\s*/i, '')
@@ -771,7 +790,7 @@ async function readArticles(
   const articles = await queryAll<ArticleRow>(
     db
       .prepare(
-        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
          FROM articles
          LEFT JOIN authors ON authors.id = articles.author_id
          ${whereSql}
@@ -787,7 +806,7 @@ async function readArticles(
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
     ),
   );
 }
@@ -812,7 +831,7 @@ async function readPublishedArticlesByCategory(db: D1Database, categoryName: str
   return queryAll<PublicArticleRow>(
     db
       .prepare(
-        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
       )
       .bind(categoryName),
   );
@@ -829,7 +848,7 @@ async function readPublishedArticlesByAuthor(db: D1Database, authorId: string) {
   return queryAll<PublicArticleRow>(
     db
       .prepare(
-        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.author_id = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.author_id = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
       )
       .bind(authorId),
   );
@@ -866,7 +885,7 @@ async function readAuthors(db: D1Database) {
 
 async function readTrainingSamples(db: D1Database) {
   return queryAll<TrainingSampleRow>(
-    db.prepare('SELECT id, category, source_url, input_title, input_article, image_url, image_object_key, analysis_json, title_style, article_style, image_style, linking_style, created_at, updated_at FROM training_samples ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 50'),
+    db.prepare('SELECT id, category, source_url, input_title, NULL AS input_article, image_url, image_object_key, analysis_json, title_style, article_style, image_style, linking_style, created_at, updated_at FROM training_samples ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 25'),
   );
 }
 
@@ -874,7 +893,7 @@ async function readTrainingNotesForCategory(db: D1Database, category: string) {
   const rows = await queryAll<TrainingSampleRow>(
     db
       .prepare(
-        'SELECT title_style, article_style, image_style, linking_style FROM training_samples WHERE category = ? ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 5',
+        'SELECT title_style, NULL AS article_style, image_style, NULL AS linking_style FROM training_samples WHERE category = ? ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 5',
       )
       .bind(category),
   );
@@ -882,9 +901,7 @@ async function readTrainingNotesForCategory(db: D1Database, category: string) {
   return rows.map((row) => {
     return [
       row.title_style ? `Title style: ${row.title_style}` : '',
-      row.article_style ? `Article style: ${row.article_style}` : '',
-      row.image_style ? `Image style: ${row.image_style}` : '',
-      row.linking_style ? `Linking style: ${row.linking_style}` : '',
+      row.image_style ? `Featured image prompt/style: ${row.image_style}` : '',
     ]
       .filter(Boolean)
       .join(' | ');
@@ -2022,11 +2039,13 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
         const progressBar = document.getElementById('gen-progress-bar');
         const progressSteps = document.getElementById('gen-progress-steps');
         const genSteps = [
-          'SEO prompt and category rules loading',
-          'Source reading and Hindi news article writing',
-          'Featured image prompt preparing',
-          'AVIF-ready featured image preparing',
-          'R2 upload and draft save'
+          'Request validation and category training notes loading',
+          'Source link reading or headline rewriting',
+          'Related internal articles and SEO rules preparing',
+          'Hindi/Hinglish article body, FAQ and links writing',
+          'Featured image prompt and alt text creating',
+          'Image generation and AVIF delivery preparing',
+          'R2 upload, schema and draft save'
         ];
         let progressTimer;
 
@@ -2047,10 +2066,10 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
           setProgress(index, percent);
           clearInterval(progressTimer);
           progressTimer = setInterval(() => {
-            percent = Math.min(92, percent + 7);
+            percent = Math.min(94, percent + 5);
             index = Math.min(genSteps.length - 1, Math.floor((percent / 100) * genSteps.length));
             setProgress(index, percent);
-          }, 4500);
+          }, 2800);
         }
 
         function finishProgress() {
@@ -2500,13 +2519,14 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
 }
 
 function trainingPage(user: SessionUser, categories: CategoryRow[], samples: TrainingSampleRow[], message = '') {
+  const categoryJson = escapeJsonForHtml(categories);
   const rows = samples.length
     ? samples
       .map(
         (sample) => `
-          <tr>
+          <tr data-id="${escapeHtml(sample.id)}">
             <td>
-              <div style="font-weight:600;">${escapeHtml(sample.category)}</div>
+              <select class="training-category-select" data-original="${escapeHtml(sample.category)}">${renderCategoryOptions(categories, sample.category)}</select>
               <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(formatDateLabel(sample.created_at))}</div>
             </td>
             <td>
@@ -2514,7 +2534,10 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
               <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(sample.title_style || '')}</div>
             </td>
             <td>${sample.image_url ? `<img class="author-avatar" src="${escapeHtml(sample.image_url)}" alt="Training image" />` : ''}</td>
-            <td>${escapeHtml(sample.article_style || '')}</td>
+            <td>
+              <div>${escapeHtml(sample.image_style || '')}</div>
+              <button class="btn btn-secondary" type="button" onclick="saveTrainingCategory('${escapeHtml(sample.id)}', this)" style="margin-top:8px;">Save Category</button>
+            </td>
           </tr>`,
       )
       .join('')
@@ -2535,7 +2558,7 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
             <div class="card-header"><h2>Saved Training</h2></div>
             <div style="overflow-x:auto;">
               <table>
-                <thead><tr><th>Category</th><th>Headline Style</th><th>Image</th><th>Article Style</th></tr></thead>
+                <thead><tr><th>Category</th><th>Headline Style</th><th>Source Image</th><th>Image Prompt</th></tr></thead>
                 <tbody>${rows}</tbody>
               </table>
             </div>
@@ -2554,6 +2577,11 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
                 </div>
                 <button class="btn btn-primary btn-full" id="training-submit" type="submit">Analyze & Save</button>
                 <div class="notice" id="training-notice"></div>
+                <div class="progress-panel" id="training-progress" hidden>
+                  <div class="progress-top"><strong id="training-progress-label">Preparing</strong><span id="training-progress-percent">0%</span></div>
+                  <div class="progress-track"><div class="progress-bar" id="training-progress-bar"></div></div>
+                  <div class="progress-steps" id="training-progress-steps"></div>
+                </div>
               </form>
             </div>
           </div>
@@ -2563,10 +2591,56 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
         const form = document.getElementById('training-form');
         const notice = document.getElementById('training-notice');
         const btn = document.getElementById('training-submit');
+        const categories = ${categoryJson};
+        const trainingProgress = document.getElementById('training-progress');
+        const trainingProgressLabel = document.getElementById('training-progress-label');
+        const trainingProgressPercent = document.getElementById('training-progress-percent');
+        const trainingProgressBar = document.getElementById('training-progress-bar');
+        const trainingProgressSteps = document.getElementById('training-progress-steps');
+        const trainingSteps = [
+          'Link validation and request preparing',
+          'Source page browsing and readable text extracting',
+          'Headline, meta and page headings scanning',
+          'Featured image URL detecting',
+          'AI style analysis running',
+          'Title, article, image and linking prompts saving'
+        ];
+        let trainingTimer;
+
+        function setTrainingProgress(index, percent) {
+          trainingProgress.hidden = false;
+          trainingProgressLabel.textContent = trainingSteps[index] || 'Finishing';
+          trainingProgressPercent.textContent = Math.round(percent) + '%';
+          trainingProgressBar.style.width = Math.max(8, Math.min(100, percent)) + '%';
+          trainingProgressSteps.innerHTML = trainingSteps.map((step, i) => {
+            const state = i < index ? 'done' : i === index ? 'active' : '';
+            return '<div class="progress-step ' + state + '"><span class="progress-dot"></span><span>' + step + '</span></div>';
+          }).join('');
+        }
+
+        function startTrainingProgress() {
+          let percent = 6;
+          setTrainingProgress(0, percent);
+          clearInterval(trainingTimer);
+          trainingTimer = setInterval(() => {
+            percent = Math.min(94, percent + 6);
+            const index = Math.min(trainingSteps.length - 1, Math.floor((percent / 100) * trainingSteps.length));
+            setTrainingProgress(index, percent);
+          }, 1800);
+        }
+
+        function finishTrainingProgress() {
+          clearInterval(trainingTimer);
+          setTrainingProgress(trainingSteps.length - 1, 100);
+        }
+
         form.addEventListener('submit', async (event) => {
           event.preventDefault();
           btn.disabled = true;
           btn.textContent = 'Analyzing...';
+          notice.textContent = '';
+          notice.className = 'notice';
+          startTrainingProgress();
           const payload = new FormData();
           payload.set('category', document.getElementById('training-category').value);
           payload.set('sourceUrl', document.getElementById('training-url').value);
@@ -2574,14 +2648,39 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
             const res = await fetch('/api/training', { method: 'POST', body: payload });
             const data = await res.json();
             if (!res.ok) throw new Error(data.message || 'Training save failed');
+            finishTrainingProgress();
             window.location.href = '/training?saved=1';
           } catch (err) {
+            clearInterval(trainingTimer);
             notice.textContent = err.message || 'Training save failed';
             notice.className = 'notice error';
             btn.disabled = false;
             btn.textContent = 'Analyze & Save';
           }
         });
+
+        async function saveTrainingCategory(id, btn) {
+          const row = document.querySelector('tr[data-id="' + id + '"]');
+          const select = row?.querySelector('.training-category-select');
+          if (!select) return;
+          btn.disabled = true;
+          const originalText = btn.textContent;
+          btn.textContent = 'Saving...';
+          try {
+            const res = await fetch('/api/training/' + encodeURIComponent(id) + '/category', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ category: select.value }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Category update failed');
+            window.location.href = '/training?saved=1';
+          } catch (err) {
+            alert(err.message || 'Category update failed');
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        }
       </script>
     `,
   });
@@ -3205,6 +3304,11 @@ app.post('/api/training', async (c) => {
       articleText,
       imageDataUrl,
     });
+    const trainingRecord = {
+      title_style: dbText(analysis.title_style, 'Short Hindi/Hinglish factual headline style') || 'Short Hindi/Hinglish factual headline style',
+      image_style: dbText(analysis.image_style, 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') || 'Featured image prompt: clean editorial image, one clear subject, no text overlay.',
+      summary: dbText(analysis.summary, 'Headline and image prompt training saved.') || 'Headline and image prompt training saved.',
+    };
     const now = new Date().toISOString();
     await c.env.ADMIN_DB
       .prepare(
@@ -3215,25 +3319,46 @@ app.post('/api/training', async (c) => {
         category,
         sourceUrl || null,
         source.title || null,
-        articleText || null,
+        null,
         imageUrl,
         null,
-        JSON.stringify(analysis),
-        analysis.title_style,
-        analysis.article_style,
-        analysis.image_style,
-        analysis.linking_style,
+        JSON.stringify(trainingRecord),
+        trainingRecord.title_style,
+        null,
+        trainingRecord.image_style,
+        null,
         now,
         now,
       )
       .run();
 
-    return c.json({ ok: true, analysis });
+    return c.json({ ok: true, analysis: trainingRecord });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Training save failed';
     console.error('Training error:', message);
     return c.json({ ok: false, message: `Training save failed: ${message}` }, 500);
   }
+});
+
+app.patch('/api/training/:id/category', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const body = await c.req.json<{ category?: string }>();
+  const category = normalizeText(body.category);
+  if (!category) {
+    return c.json({ ok: false, message: 'Category required hai' }, 400);
+  }
+
+  await c.env.ADMIN_DB
+    .prepare('UPDATE training_samples SET category = ?, updated_at = ? WHERE id = ?')
+    .bind(category, new Date().toISOString(), c.req.param('id'))
+    .run();
+
+  return c.json({ ok: true });
 });
 
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
