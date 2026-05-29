@@ -145,6 +145,33 @@ function publicAssetUrl(c: Context<{ Bindings: Bindings }>, key: string) {
   return `${baseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function clampNumber(value: string | null, min: number, max: number, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.round(parsed)));
+}
+
+function optimizedImageUrl(url: string, width: number, quality = 72) {
+  const parsed = new URL(url);
+  parsed.searchParams.set('w', String(width));
+  parsed.searchParams.set('q', String(quality));
+  return parsed.toString();
+}
+
+function featuredImageSrcset(url: string) {
+  return [480, 768, 1080, 1360]
+    .map((width) => `${optimizedImageUrl(url, width)} ${width}w`)
+    .join(', ');
+}
+
+function cardImageSrcset(url: string) {
+  return [360, 540, 720]
+    .map((width) => `${optimizedImageUrl(url, width, 70)} ${width}w`)
+    .join(', ');
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll('&', '&amp;')
@@ -344,6 +371,34 @@ async function servePublicAsset(c: Context<{ Bindings: Bindings }>, key: string)
     return c.text('Not found', 404);
   }
 
+  const isHeadRequest = c.req.method === 'HEAD';
+  const url = new URL(c.req.url);
+  const widthParam = url.searchParams.get('w');
+  if (widthParam) {
+    const width = clampNumber(widthParam, 240, 1600, 960);
+    const quality = clampNumber(url.searchParams.get('q'), 55, 82, 72);
+    const sourceUrl = new URL(c.req.url);
+    sourceUrl.search = '';
+    const resizedResponse = await fetch(sourceUrl.toString(), {
+      cf: {
+        image: {
+          width,
+          quality,
+          fit: 'cover',
+          format: 'webp',
+        },
+      },
+    } as RequestInit);
+    const headers = new Headers(resizedResponse.headers);
+    headers.set('cache-control', 'public, max-age=31536000, immutable');
+    headers.set('vary', 'Accept');
+    return new Response(isHeadRequest ? null : resizedResponse.body, {
+      status: resizedResponse.status,
+      statusText: resizedResponse.statusText,
+      headers,
+    });
+  }
+
   const object = await c.env.ARTICLE_IMAGES.get(key);
   if (!object) {
     return c.text('Not found', 404);
@@ -356,7 +411,7 @@ async function servePublicAsset(c: Context<{ Bindings: Bindings }>, key: string)
     headers.set('cache-control', 'public, max-age=31536000, immutable');
   }
 
-  return new Response(object.body, { headers });
+  return new Response(isHeadRequest ? null : object.body, { headers });
 }
 
 async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
@@ -417,7 +472,7 @@ async function readArticles(db: D1Database) {
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24",
+      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 12",
     ),
   );
 }
@@ -559,46 +614,48 @@ function navItem(href: string, label: string, active: boolean) {
 function publicStyles() {
   return `
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#121212; --muted:#666; --border:#e6e2dc; --paper:#fff; --soft:#f8f7f4; --accent:#0f6b57; }
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#121212; --muted:#4f4f4f; --border:#e1ddd6; --paper:#fff; --soft:#f8f7f4; --accent:#0b5f4d; }
     html, body { min-height: 100%; background: var(--paper); color: var(--text); }
     a { color: inherit; text-decoration: none; }
     img { max-width: 100%; display: block; }
     .site-header { border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.94); position: sticky; top: 0; z-index: 10; }
-    .wrap { width: min(1080px, calc(100% - 32px)); margin: 0 auto; }
-    .nav { height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .wrap { width: min(1080px, calc(100% - 24px)); margin: 0 auto; }
+    .nav { min-height: 58px; padding: 12px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .brand { font-weight: 800; font-size: 1.05rem; letter-spacing: 0; }
     .nav-links { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 0.9rem; }
-    .hero { padding: 56px 0 34px; background: var(--soft); border-bottom: 1px solid var(--border); }
-    .hero h1 { font-size: clamp(2rem, 5vw, 4.2rem); line-height: 1.02; letter-spacing: 0; max-width: 780px; }
-    .hero p { margin-top: 14px; color: var(--muted); line-height: 1.7; max-width: 640px; font-size: 1.02rem; }
-    .grid { padding: 30px 0 56px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .hero { padding: 34px 0 24px; background: var(--soft); border-bottom: 1px solid var(--border); }
+    .hero h1 { font-size: clamp(2rem, 2rem + 1.8vw, 4rem); line-height: 1.04; letter-spacing: 0; max-width: 780px; }
+    .hero p { margin-top: 12px; color: var(--muted); line-height: 1.7; max-width: 640px; font-size: 1rem; }
+    .grid { padding: 20px 0 44px; display: grid; grid-template-columns: 1fr; gap: 14px; }
     .post-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; display: grid; align-content: start; }
-    .post-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
-    .post-card-body { padding: 16px; display: grid; gap: 10px; }
+    .post-card img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
+    .post-card-body { padding: 14px; display: grid; gap: 9px; }
     .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-    .post-card h2 { font-size: 1.05rem; line-height: 1.35; letter-spacing: 0; }
+    .post-card h2 { font-size: 1rem; line-height: 1.35; letter-spacing: 0; }
     .post-card p { color: var(--muted); line-height: 1.6; font-size: 0.9rem; }
-    .date { color: #888; font-size: 0.82rem; }
+    .date { color: #5f6368; font-size: 0.82rem; }
     .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
-    .article { padding: 34px 0 64px; }
-    .article-head { display: grid; gap: 14px; padding-bottom: 24px; }
-    .article h1 { max-width: 900px; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.08; letter-spacing: 0; }
-    .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1.05rem; }
+    .article { padding: 22px 0 52px; }
+    .article-head { display: grid; gap: 12px; padding-bottom: 18px; }
+    .article h1 { max-width: 900px; font-size: clamp(2rem, 2rem + 1vw, 3.25rem); line-height: 1.1; letter-spacing: 0; }
+    .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1rem; }
     .breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.84rem; }
     .breadcrumbs a { color: var(--accent); }
     .preview-banner { border-bottom: 1px solid var(--border); background: #111; color: #fff; font-size: 0.88rem; }
     .preview-banner .wrap { padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-    .featured { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); margin: 8px 0 28px; background: var(--soft); }
-    .content { max-width: 760px; font-size: 1.03rem; line-height: 1.8; }
+    .featured { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); margin: 6px 0 24px; background: var(--soft); }
+    .content { max-width: 760px; font-size: 1rem; line-height: 1.8; }
     .content h1, .content h2, .content h3 { line-height: 1.25; margin: 1.6em 0 0.55em; letter-spacing: 0; }
     .content p, .content ul, .content ol, .content table, .content blockquote { margin: 0 0 1.05em; }
+    .content > * { content-visibility: auto; contain-intrinsic-size: auto 180px; }
     .content ul, .content ol { padding-left: 1.4em; }
     .content table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
     .content td, .content th { border: 1px solid var(--border); padding: 9px; text-align: left; }
     .content a { color: var(--accent); text-decoration: underline; }
     .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
-    @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } .nav { height: auto; padding: 14px 0; align-items: flex-start; flex-direction: column; } .hero { padding-top: 36px; } }
+    @media (min-width: 700px) { .wrap { width: min(1080px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, 1fr); gap: 16px; padding-top: 28px; } .post-card-body { padding: 16px; } .post-card h2 { font-size: 1.05rem; } .article { padding-top: 34px; } }
+    @media (min-width: 980px) { .grid { grid-template-columns: repeat(3, 1fr); gap: 18px; } .hero { padding: 56px 0 34px; } .content { font-size: 1.03rem; } }
+    @media (max-width: 620px) { .nav { align-items: flex-start; flex-direction: column; } }
   `;
 }
 
@@ -654,7 +711,7 @@ function storedSchemaObjects(schemaMarkup: string | null | undefined) {
         return maybeSchema?.data || item;
       })
       .filter((item): item is Record<string, unknown> => {
-        return Boolean(item && typeof item === 'object' && '@type' in item);
+        return Boolean(item && typeof item === 'object' && item['@type'] === 'FAQPage');
       });
   } catch {
     return [];
@@ -729,6 +786,9 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
   const description = article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`;
   const image = article.featured_image_url || '';
+  const imagePreload = image
+    ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 1080))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 700px) calc(100vw - 24px), 1080px" fetchpriority="high" />`
+    : '';
   const schemaObjects = [
     articleJsonLd(article, canonicalUrl),
     breadcrumbJsonLd(article, canonicalUrl),
@@ -738,6 +798,7 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
 
   return `
   <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+  ${imagePreload}
   ${preview ? '<meta name="robots" content="noindex,nofollow" />' : ''}
   <meta property="og:type" content="article" />
   <meta property="og:title" content="${escapeHtml(article.seo_title || article.title)}" />
@@ -753,9 +814,9 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
 function publicHomePage(articles: PublicArticleRow[]) {
   const cards = articles.length
     ? `<section class="wrap grid">${articles
-      .map((article) => {
+      .map((article, index) => {
         const image = article.featured_image_url
-          ? `<img src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="lazy" />`
+          ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 979px) calc((100vw - 48px) / 2), 348px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
           : '';
         return `<a class="post-card" href="/${escapeHtml(article.slug)}">
           ${image}
@@ -780,7 +841,7 @@ function publicHomePage(articles: PublicArticleRow[]) {
 function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean } = {}) {
   const preview = Boolean(options.preview);
   const image = article.featured_image_url
-    ? `<img class="featured" src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.featured_image_alt || article.title)}" />`
+    ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 1080))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 700px) calc(100vw - 24px), 1080px" width="1360" height="765" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
   const breadcrumbTrail = article.category
     ? `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.category)}</span><span>/</span><span>${escapeHtml(article.title)}</span>`
@@ -812,7 +873,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
 async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   const url = new URL(c.req.url);
 
-  if (c.req.method !== 'GET') {
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     return c.text('Not found', 404);
   }
 

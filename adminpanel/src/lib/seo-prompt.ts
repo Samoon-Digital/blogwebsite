@@ -111,7 +111,7 @@ CRITICAL: First 100 words must:
 - Set expectations for content
 
 ### 8. FAQ Section (Powerful for SEO)
-Include 5-7 FAQ questions relevant to the topic:
+Include 4-5 FAQ questions relevant to the topic:
 - Format: Q: [Question], A: [Answer]
 - Include keyword variations in questions
 - Provide direct, helpful answers
@@ -137,6 +137,7 @@ ${config.readability_rules || 'Keep paragraphs small and simple'}
 - **Bold**: Highlight important terms and keywords
 - **Highlights**: Use blockquotes or boxes for key takeaways
 - **Images**: Mention where featured images should go
+- **DOM Size**: Keep HTML lean. Use semantic p, h2, h3, ul, ol, table only when useful. Avoid unnecessary wrapper divs and deeply nested elements.
 
 ### 11. Internal Linking
 Suggest internal links to related articles:

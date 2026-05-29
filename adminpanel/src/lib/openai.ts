@@ -202,6 +202,7 @@ Requirements:
 - Emotional appeal with relatable imagery
 - No text overlays on image
 - 16:9 aspect ratio (ideal for web)
+- Clean editorial composition with one clear subject, low visual noise, sharp edges, and uncluttered background
 `;
 
         const response = await fetch(`${this.baseUrl}/images/generations`, {
@@ -214,7 +215,7 @@ Requirements:
                 size: '1536x1024',
                 quality: 'medium',
                 output_format: 'webp',
-                output_compression: 82,
+                output_compression: 58,
             }),
         });
 
