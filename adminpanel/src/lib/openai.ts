@@ -37,6 +37,14 @@ export interface BlogTopicResult {
     reason: string;
 }
 
+export interface TrainingAnalysisResult {
+    title_style: string;
+    article_style: string;
+    image_style: string;
+    linking_style: string;
+    summary: string;
+}
+
 export interface SourceArticleContext {
     url: string;
     title?: string;
@@ -199,6 +207,19 @@ class OpenAIClient {
         };
     }
 
+    async createHeadlineFromTitle(rawTitle: string, categoryHint: string): Promise<BlogTopicResult> {
+        const content = await this.createJsonResponse(
+            'You are an Indian Hindi/Hinglish news editor for Laxy.in. Rewrite rough user-provided topics into short, catchy, SEO-safe Hindi headlines. Do not copy the raw title as-is. Keep it factual, no clickbait, no extra punctuation spam. Return JSON with keys: blog_title, category, reason.',
+            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article.`,
+            900,
+        );
+        const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI headline brief');
+        if (!parsed.blog_title) {
+            throw new Error('OpenAI headline brief missed blog_title');
+        }
+        return parsed;
+    }
+
     async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
             'You are an Indian news editor for Laxy.in. Read the source content and create the best Hindi/Hinglish article brief for our website. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
@@ -210,6 +231,67 @@ class OpenAIClient {
             throw new Error('OpenAI source brief missed blog_title');
         }
         return parsed;
+    }
+
+    async analyzeTrainingSample(input: {
+        category: string;
+        sourceUrl?: string;
+        title?: string;
+        articleText?: string;
+        imageDataUrl?: string;
+    }): Promise<TrainingAnalysisResult> {
+        const textInput = [
+            `Category: ${input.category}`,
+            input.sourceUrl ? `Source/link: ${input.sourceUrl}` : '',
+            input.title ? `Sample title/headline: ${input.title}` : '',
+            input.articleText ? `Sample article/content:\n${input.articleText.slice(0, 9000)}` : '',
+            'Analyze this sample for reusable editorial training. Return JSON with keys: title_style, article_style, image_style, linking_style, summary. Focus on how future articles in this category should be titled, structured, linked, and what featured images should look like.',
+        ]
+            .filter(Boolean)
+            .join('\n\n');
+        const inputContent: Array<{ type: string; text?: string; image_url?: string; detail?: string }> = [
+            { type: 'input_text', text: textInput },
+        ];
+        if (input.imageDataUrl) {
+            inputContent.push({ type: 'input_image', image_url: input.imageDataUrl, detail: 'auto' });
+        }
+
+        const response = await fetch(`${this.baseUrl}/responses`, {
+            method: 'POST',
+            headers: this.headers(),
+            body: JSON.stringify({
+                model: this.textModel,
+                instructions:
+                    'You are a Hindi news/blog editorial trainer for Laxy.in. Extract reusable writing, headline, linking, and image style guidance from user-provided examples. Return valid JSON only.',
+                input: [
+                    {
+                        role: 'user',
+                        content: inputContent,
+                    },
+                ],
+                max_output_tokens: 1800,
+                text: {
+                    format: { type: 'json_object' },
+                },
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(await this.readApiError(response, 'OpenAI'));
+        }
+
+        const parsed = this.parseJson<TrainingAnalysisResult>(
+            this.extractResponsesText(await response.json(), 'OpenAI'),
+            'OpenAI training analysis',
+        );
+
+        return {
+            title_style: parsed.title_style || 'Short Hindi/Hinglish factual headline style',
+            article_style: parsed.article_style || 'Clear Hindi/Hinglish news explainer style',
+            image_style: parsed.image_style || 'Clean editorial featured image style',
+            linking_style: parsed.linking_style || 'Use helpful internal and authoritative external links naturally',
+            summary: parsed.summary || 'Reusable training sample saved.',
+        };
     }
 
     async generateFeaturedImage(prompt: string, title: string, altText?: string): Promise<GeneratedImage> {

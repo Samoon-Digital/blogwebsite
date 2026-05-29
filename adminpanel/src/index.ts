@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
-import { buildSeoPrompt } from './lib/seo-prompt';
+import { buildSeoPrompt, type SeoPromptControls } from './lib/seo-prompt';
 import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage } from './lib/openai';
 
 type Bindings = {
@@ -122,6 +122,37 @@ type ArticleListResult = {
   page: number;
   totalPages: number;
   perPage: number;
+};
+
+type TrainingSampleRow = {
+  id: string;
+  category: string;
+  source_url: string | null;
+  input_title: string | null;
+  input_article: string | null;
+  image_url: string | null;
+  image_object_key: string | null;
+  analysis_json: string;
+  title_style: string | null;
+  article_style: string | null;
+  image_style: string | null;
+  linking_style: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SEOConfigRow = {
+  id?: string;
+  category: string;
+  canonical_tags: string | null;
+  schema_types: string | null;
+  keyword_focus: string | null;
+  title_template: string | null;
+  h_structure: string | null;
+  readability_rules: string | null;
+  image_guidance: string | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 type DashboardMetrics = {
@@ -268,6 +299,51 @@ function buildAdminPath(path: string, params: Record<string, string | number | n
 
 function cleanContentType(value: string) {
   return value.split(';', 1)[0].trim().toLowerCase();
+}
+
+function booleanControl(value: unknown, fallback = true) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return value === 'on' || value === 'true' || value === '1' || value === 'yes';
+  }
+  return fallback;
+}
+
+function defaultGenerationControls(): SeoPromptControls {
+  return {
+    includeFaqs: true,
+    includeToc: true,
+    includeInternalLinks: true,
+    includeExternalLinks: true,
+    includeTables: true,
+    useTrainingStyle: true,
+    newsAngle: true,
+  };
+}
+
+function parseGenerationControls(body: Record<string, unknown>): SeoPromptControls {
+  const defaults = defaultGenerationControls();
+  return {
+    includeFaqs: booleanControl(body.includeFaqs, defaults.includeFaqs),
+    includeToc: booleanControl(body.includeToc, defaults.includeToc),
+    includeInternalLinks: booleanControl(body.includeInternalLinks, defaults.includeInternalLinks),
+    includeExternalLinks: booleanControl(body.includeExternalLinks, defaults.includeExternalLinks),
+    includeTables: booleanControl(body.includeTables, defaults.includeTables),
+    useTrainingStyle: booleanControl(body.useTrainingStyle, defaults.useTrainingStyle),
+    newsAngle: booleanControl(body.newsAngle, defaults.newsAngle),
+  };
+}
+
+function fileToDataUrl(file: File, bytes: ArrayBuffer) {
+  const contentType = cleanContentType(file.type || 'image/jpeg');
+  let binary = '';
+  const view = new Uint8Array(bytes);
+  for (let index = 0; index < view.length; index += 1) {
+    binary += String.fromCharCode(view[index]);
+  }
+  return `data:${contentType};base64,${btoa(binary)}`;
 }
 
 function normalizeArticleContent(content: string) {
@@ -461,6 +537,37 @@ async function uploadAuthorImage(c: Context<{ Bindings: Bindings }>, file: File,
   return {
     objectKey,
     publicUrl: optimizedImageUrl(publicAssetUrl(c, objectKey), 320, 72),
+  };
+}
+
+async function uploadTrainingImage(c: Context<{ Bindings: Bindings }>, file: File, sampleId: string, slug: string, bytes: ArrayBuffer) {
+  if (!c.env.ARTICLE_IMAGES) {
+    throw new Error('R2 bucket binding ARTICLE_IMAGES is not configured');
+  }
+
+  const contentType = cleanContentType(file.type || 'image/jpeg');
+  const extension = contentType.includes('png')
+    ? 'png'
+    : contentType.includes('webp')
+      ? 'webp'
+      : contentType.includes('avif')
+        ? 'avif'
+        : 'jpg';
+  const objectKey = `training/${slug || sampleId}-${sampleId}.${extension}`;
+  await c.env.ARTICLE_IMAGES.put(objectKey, bytes, {
+    httpMetadata: {
+      contentType,
+      cacheControl: 'public, max-age=31536000, immutable',
+    },
+    customMetadata: {
+      trainingSampleId: sampleId,
+      provider: 'admin-training-upload',
+    },
+  });
+
+  return {
+    objectKey,
+    publicUrl: optimizedImageUrl(publicAssetUrl(c, objectKey), 720, 72),
   };
 }
 
@@ -686,6 +793,49 @@ async function readAuthors(db: D1Database) {
   );
 }
 
+async function readTrainingSamples(db: D1Database) {
+  return queryAll<TrainingSampleRow>(
+    db.prepare('SELECT id, category, source_url, input_title, input_article, image_url, image_object_key, analysis_json, title_style, article_style, image_style, linking_style, created_at, updated_at FROM training_samples ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 50'),
+  );
+}
+
+async function readTrainingNotesForCategory(db: D1Database, category: string) {
+  const rows = await queryAll<TrainingSampleRow>(
+    db
+      .prepare(
+        'SELECT title_style, article_style, image_style, linking_style FROM training_samples WHERE category = ? ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 5',
+      )
+      .bind(category),
+  );
+
+  return rows.map((row) => {
+    return [
+      row.title_style ? `Title style: ${row.title_style}` : '',
+      row.article_style ? `Article style: ${row.article_style}` : '',
+      row.image_style ? `Image style: ${row.image_style}` : '',
+      row.linking_style ? `Linking style: ${row.linking_style}` : '',
+    ]
+      .filter(Boolean)
+      .join(' | ');
+  }).filter(Boolean);
+}
+
+async function readRelatedArticlesForPrompt(db: D1Database, category: string, currentTitle: string) {
+  return queryAll<{ title: string; slug: string; category: string | null }>(
+    db
+      .prepare(
+        "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) AND (category = ? OR ? = '') ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 6",
+      )
+      .bind(currentTitle, category, category),
+  );
+}
+
+async function readSeoConfigs(db: D1Database) {
+  return queryAll<SEOConfigRow>(
+    db.prepare('SELECT category, canonical_tags, schema_types, keyword_focus, title_template, h_structure, readability_rules, image_guidance FROM seo_config ORDER BY category ASC'),
+  );
+}
+
 async function resolveAuthorId(db: D1Database, requestedAuthorId: string) {
   if (requestedAuthorId) {
     const selected = await db.prepare('SELECT id FROM authors WHERE id = ? LIMIT 1').bind(requestedAuthorId).first<{ id: string }>();
@@ -838,6 +988,11 @@ function shellStyles() {
     .pagination { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--text-muted); font-size: 0.875rem; }
     .author-avatar { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--bg-subtle); }
     .author-cell { display: flex; gap: 10px; align-items: center; }
+    .radio-grid { display: grid; gap: 8px; }
+    .radio-control { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; }
+    .radio-control strong { font-size: 0.875rem; font-weight: 600; }
+    .radio-control label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8125rem; color: var(--text-muted); }
+    .audit-score { display: inline-flex; align-items: center; justify-content: center; min-width: 42px; padding: 5px 9px; border-radius: 999px; font-weight: 700; color: #fff; background: #111; }
     .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 99px; font-size: 0.75rem; font-weight: 500; border: 1px solid var(--border); white-space: nowrap; flex-shrink: 0; }
     .badge-published { background: #111; color: #fff; border-color: #111; }
     .badge-review { background: #f0f0f0; color: #555; }
@@ -1221,7 +1376,7 @@ function loginPage(error = '') {
 function appShellPage(
   user: SessionUser,
   options: {
-    activeNav: 'dashboard' | 'articles' | 'categories' | 'authors' | 'seo';
+    activeNav: 'dashboard' | 'articles' | 'categories' | 'authors' | 'training' | 'seo';
     pageTitle: string;
     eyebrow: string;
     title: string;
@@ -1249,6 +1404,7 @@ function appShellPage(
       ${navItem('/articles', 'Articles', options.activeNav === 'articles')}
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
       ${navItem('/authors', 'Authors', options.activeNav === 'authors')}
+      ${navItem('/training', 'Training', options.activeNav === 'training')}
       ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
@@ -1530,6 +1686,15 @@ function articlesManagementPage(
   });
 }
 
+function renderOnOffControl(name: string, label: string, enabled: boolean) {
+  return `
+    <div class="radio-control">
+      <strong>${escapeHtml(label)}</strong>
+      <label><input type="radio" name="${escapeHtml(name)}" value="on"${enabled ? ' checked' : ''} /> On</label>
+      <label><input type="radio" name="${escapeHtml(name)}" value="off"${enabled ? '' : ' checked'} /> Off</label>
+    </div>`;
+}
+
 
 function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors: AuthorRow[]) {
   return appShellPage(user, {
@@ -1565,6 +1730,18 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <select id="author-id" name="author_id" required>
                   ${renderAuthorOptions(authors, authors.find((author) => Number(author.is_default) === 1)?.id || authors[0]?.id || 'default-author')}
                 </select>
+              </div>
+              <div class="field">
+                <label>AI Controls</label>
+                <div class="radio-grid">
+                  ${renderOnOffControl('include-faqs', 'FAQs', true)}
+                  ${renderOnOffControl('include-toc', 'Table of Contents', true)}
+                  ${renderOnOffControl('include-internal-links', 'Internal Links', true)}
+                  ${renderOnOffControl('include-external-links', 'External Links', true)}
+                  ${renderOnOffControl('include-tables', 'Tables', true)}
+                  ${renderOnOffControl('use-training-style', 'Training Style', true)}
+                  ${renderOnOffControl('news-angle', 'News Angle', true)}
+                </div>
               </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
               <div class="notice" id="gen-notice"></div>
@@ -1671,6 +1848,13 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 title,
                 category: document.getElementById('category').value,
                 authorId: document.getElementById('author-id').value,
+                includeFaqs: document.querySelector('input[name="include-faqs"]:checked').value === 'on',
+                includeToc: document.querySelector('input[name="include-toc"]:checked').value === 'on',
+                includeInternalLinks: document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
+                includeExternalLinks: document.querySelector('input[name="include-external-links"]:checked').value === 'on',
+                includeTables: document.querySelector('input[name="include-tables"]:checked').value === 'on',
+                useTrainingStyle: document.querySelector('input[name="use-training-style"]:checked').value === 'on',
+                newsAngle: document.querySelector('input[name="news-angle"]:checked').value === 'on',
               }),
             });
             const data = await res.json();
@@ -2080,6 +2264,244 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
   });
 }
 
+function trainingPage(user: SessionUser, categories: CategoryRow[], samples: TrainingSampleRow[], message = '') {
+  const rows = samples.length
+    ? samples
+      .map(
+        (sample) => `
+          <tr>
+            <td>
+              <div style="font-weight:600;">${escapeHtml(sample.category)}</div>
+              <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(formatDateLabel(sample.created_at))}</div>
+            </td>
+            <td>
+              <div style="font-weight:600;">${escapeHtml(sample.input_title || sample.source_url || 'Training sample')}</div>
+              <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(sample.title_style || '')}</div>
+            </td>
+            <td>${sample.image_url ? `<img class="author-avatar" src="${escapeHtml(optimizedImageUrl(sample.image_url, 96, 72))}" alt="Training image" />` : ''}</td>
+            <td>${escapeHtml(sample.article_style || '')}</td>
+          </tr>`,
+      )
+      .join('')
+    : `<tr><td colspan="4"><div class="empty-state">No training samples yet.</div></td></tr>`;
+
+  return appShellPage(user, {
+    activeNav: 'training',
+    pageTitle: 'Training | Samoon Digital Admin',
+    eyebrow: 'AI Training',
+    title: 'Training',
+    subtitle: 'Category-wise examples save karein; generator unke style ko follow karega.',
+    toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
+    content: `
+      <div class="stack">
+        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
+        <div class="cols-aside">
+          <div class="card">
+            <div class="card-header"><h2>Saved Training</h2></div>
+            <div style="overflow-x:auto;">
+              <table>
+                <thead><tr><th>Category</th><th>Headline Style</th><th>Image</th><th>Article Style</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2>Add Training Sample</h2></div>
+            <div class="card-body">
+              <form class="form" id="training-form">
+                <div class="field">
+                  <label for="training-category">Category</label>
+                  <select id="training-category" required>${renderCategoryOptions(categories, 'News')}</select>
+                </div>
+                <div class="field">
+                  <label for="training-url">Link</label>
+                  <input id="training-url" type="url" placeholder="https://example.com/article" />
+                </div>
+                <div class="field">
+                  <label for="training-title">Example Headline</label>
+                  <input id="training-title" placeholder="Sample title/headline" />
+                </div>
+                <div class="field">
+                  <label for="training-article">Article / Notes</label>
+                  <textarea id="training-article" placeholder="Paste article, format notes, or reference copy"></textarea>
+                </div>
+                <div class="field">
+                  <label for="training-image">Image</label>
+                  <input id="training-image" type="file" accept="image/png,image/jpeg,image/webp,image/avif" />
+                </div>
+                <button class="btn btn-primary btn-full" id="training-submit" type="submit">Analyze & Save</button>
+                <div class="notice" id="training-notice"></div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        const form = document.getElementById('training-form');
+        const notice = document.getElementById('training-notice');
+        const btn = document.getElementById('training-submit');
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          btn.disabled = true;
+          btn.textContent = 'Analyzing...';
+          const payload = new FormData();
+          payload.set('category', document.getElementById('training-category').value);
+          payload.set('sourceUrl', document.getElementById('training-url').value);
+          payload.set('title', document.getElementById('training-title').value);
+          payload.set('articleText', document.getElementById('training-article').value);
+          const image = document.getElementById('training-image').files[0];
+          if (image) payload.set('image', image);
+          try {
+            const res = await fetch('/api/training', { method: 'POST', body: payload });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Training save failed');
+            window.location.href = '/training?saved=1';
+          } catch (err) {
+            notice.textContent = err.message || 'Training save failed';
+            notice.className = 'notice error';
+            btn.disabled = false;
+            btn.textContent = 'Analyze & Save';
+          }
+        });
+      </script>
+    `,
+  });
+}
+
+function auditArticle(article: ArticleRow) {
+  const issues: string[] = [];
+  const contentText = stripHtml(article.content);
+  const h2Count = (article.content.match(/<h2\b/gi) || []).length;
+  const faqCount = (article.content.match(/faq|सवाल|प्रश्न|Q:/gi) || []).length;
+  const internalLinks = (article.content.match(/href="\/[^"]+"/gi) || []).length;
+  const externalLinks = (article.content.match(/href="https?:\/\//gi) || []).length;
+
+  if (!article.seo_title || article.seo_title.length < 35 || article.seo_title.length > 70) issues.push('SEO title length');
+  if (!article.seo_description || article.seo_description.length < 120 || article.seo_description.length > 170) issues.push('Meta description');
+  if (!article.featured_image_url) issues.push('Featured image');
+  if (!article.featured_image_alt) issues.push('Image alt');
+  if (contentText.length < 1200) issues.push('Thin content');
+  if (h2Count < 2) issues.push('H2 structure');
+  if (faqCount < 1) issues.push('FAQ missing');
+  if (internalLinks < 1) issues.push('Internal links');
+  if (externalLinks < 1 && /(vacancy|bharti|student|exam|result|admit|scholarship|भर्ती|परीक्षा|छात्र)/i.test(contentText)) issues.push('External official links');
+
+  const score = Math.max(0, 100 - issues.length * 10);
+  return { score, issues };
+}
+
+function seoToolsPage(user: SessionUser, configs: SEOConfigRow[], articles: ArticleRow[], categories: CategoryRow[], message = '') {
+  const configRows = configs.length
+    ? configs.map((config) => `
+      <tr>
+        <td>${escapeHtml(config.category)}</td>
+        <td>${escapeHtml(config.keyword_focus || '')}</td>
+        <td>${escapeHtml(config.title_template || '')}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="3"><div class="empty-state">No SEO config found.</div></td></tr>`;
+  const auditRows = articles.length
+    ? articles.map((article) => {
+      const audit = auditArticle(article);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(article.title)}</strong><div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(article.category || 'General')}</div></td>
+          <td><span class="audit-score">${audit.score}</span></td>
+          <td>${escapeHtml(audit.issues.length ? audit.issues.join(', ') : 'Good')}</td>
+          <td><a class="btn btn-secondary" href="/articles/${escapeHtml(article.id)}/edit">Edit</a></td>
+        </tr>`;
+    }).join('')
+    : `<tr><td colspan="4"><div class="empty-state">No articles for audit.</div></td></tr>`;
+
+  return appShellPage(user, {
+    activeNav: 'seo',
+    pageTitle: 'SEO Tools | Samoon Digital Admin',
+    eyebrow: 'Search Optimization',
+    title: 'SEO Tools',
+    subtitle: 'SEO controls aur article audit yahan se monitor karein.',
+    toolbar: `<a class="btn btn-secondary" href="/articles/new">New Article</a>`,
+    content: `
+      <div class="stack">
+        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
+        <div class="card">
+          <div class="card-header"><h2>Update SEO Control</h2></div>
+          <div class="card-body">
+            <form class="form" id="seo-form">
+              <div class="cols-2">
+                <div class="field">
+                  <label for="seo-category">Category</label>
+                  <select id="seo-category">${renderCategoryOptions(categories, 'News')}</select>
+                </div>
+                <div class="field">
+                  <label for="seo-title-template">Title Template</label>
+                  <input id="seo-title-template" placeholder="Primary Keyword + Benefit + Year" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="seo-keyword-focus">Keyword Focus</label>
+                <textarea id="seo-keyword-focus" placeholder="Primary keyword, LSI keywords, natural density rules"></textarea>
+              </div>
+              <div class="field">
+                <label for="seo-readability">Readability Rules</label>
+                <textarea id="seo-readability" placeholder="Paragraph size, tone, tables, bullets, audience rules"></textarea>
+              </div>
+              <div class="field">
+                <label for="seo-image-guidance">Image Guidance</label>
+                <textarea id="seo-image-guidance" placeholder="Featured image style, Discover requirements, alt rules"></textarea>
+              </div>
+              <button class="btn btn-primary" type="submit">Save SEO Control</button>
+              <div class="notice" id="seo-notice"></div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>SEO Controls</h2></div>
+          <div style="overflow-x:auto;">
+            <table>
+              <thead><tr><th>Category</th><th>Keyword Focus</th><th>Title Template</th></tr></thead>
+              <tbody>${configRows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>SEO Audit</h2></div>
+          <div style="overflow-x:auto;">
+            <table>
+              <thead><tr><th>Article</th><th>Score</th><th>Issues</th><th>Action</th></tr></thead>
+              <tbody>${auditRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <script>
+        const seoForm = document.getElementById('seo-form');
+        const seoNotice = document.getElementById('seo-notice');
+        seoForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          try {
+            const res = await fetch('/api/seo-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                category: document.getElementById('seo-category').value,
+                titleTemplate: document.getElementById('seo-title-template').value,
+                keywordFocus: document.getElementById('seo-keyword-focus').value,
+                readabilityRules: document.getElementById('seo-readability').value,
+                imageGuidance: document.getElementById('seo-image-guidance').value,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'SEO save failed');
+            window.location.href = '/seo?saved=1';
+          } catch (err) {
+            seoNotice.textContent = err.message || 'SEO save failed';
+            seoNotice.className = 'notice error';
+          }
+        });
+      </script>
+    `,
+  });
+}
+
 function placeholderPage(
   user: SessionUser,
   activeNav: 'seo',
@@ -2239,6 +2661,20 @@ app.get('/authors', async (c) => {
   return c.html(authorsPage(session, authors, message));
 });
 
+app.get('/training', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.redirect('/');
+  }
+
+  const categories = await readCategories(c.env.ADMIN_DB);
+  const samples = await readTrainingSamples(c.env.ADMIN_DB);
+  const url = new URL(c.req.url);
+  const message = url.searchParams.get('saved') ? 'Training sample analyze karke save ho gaya.' : '';
+  return c.html(trainingPage(session, categories, samples, message));
+});
+
 app.get('/seo', async (c) => {
   const session = await requireSession(c);
 
@@ -2246,14 +2682,12 @@ app.get('/seo', async (c) => {
     return c.redirect('/');
   }
 
-  return c.html(
-    placeholderPage(
-      session,
-      'seo',
-      'SEO Tools',
-      'Search metadata aur template presets ko article schema ke upar seedha mount kiya ja sakta hai.',
-    ),
-  );
+  const configs = await readSeoConfigs(c.env.ADMIN_DB);
+  const auditArticles = await readArticles(c.env.ADMIN_DB, { page: 1, perPage: 30 });
+  const categories = await readCategories(c.env.ADMIN_DB);
+  const url = new URL(c.req.url);
+  const message = url.searchParams.get('saved') ? 'SEO control save ho gaya.' : '';
+  return c.html(seoToolsPage(session, configs, auditArticles.articles, categories, message));
 });
 
 app.get('/api/me', async (c) => {
@@ -2520,6 +2954,141 @@ app.delete('/api/authors/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+app.post('/api/training', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  try {
+    const openaiKey = c.env.OPENAI_API_KEY;
+    if (!openaiKey) {
+      return c.json({ ok: false, message: 'OpenAI API key not configured' }, 500);
+    }
+    initOpenAIClient({
+      apiKey: openaiKey,
+      trackingId: c.env.OPENAI_TRACKING_ID,
+      textModel: c.env.OPENAI_TEXT_MODEL,
+      imageModel: c.env.OPENAI_IMAGE_MODEL,
+    });
+    const openaiClient = getOpenAIClient();
+    const formData = await c.req.raw.formData();
+    const category = normalizeText(formData.get('category')) || 'News';
+    const sourceUrl = normalizeText(formData.get('sourceUrl'));
+    const title = normalizeText(formData.get('title'));
+    let articleText = normalizeText(formData.get('articleText'));
+    const image = formData.get('image');
+    const sampleId = crypto.randomUUID();
+    const slug = slugify(title || category) || `training-${sampleId.slice(0, 8)}`;
+    let imageUrl: string | null = null;
+    let imageObjectKey: string | null = null;
+    let imageDataUrl = '';
+
+    if (sourceUrl) {
+      const source = await fetchReadablePageText(sourceUrl);
+      articleText = [articleText, source.title, source.text].filter(Boolean).join('\n\n').slice(0, 12000);
+    }
+
+    if (!sourceUrl && !title && !articleText && !(image instanceof File && image.size > 0)) {
+      return c.json({ ok: false, message: 'Training ke liye link, title, article ya image me se kuch add karein' }, 400);
+    }
+
+    if (image instanceof File && image.size > 0) {
+      if (image.size > 4 * 1024 * 1024) {
+        return c.json({ ok: false, message: 'Training image 4MB se chhoti honi chahiye' }, 400);
+      }
+      const bytes = await image.arrayBuffer();
+      imageDataUrl = fileToDataUrl(image, bytes);
+      const uploaded = await uploadTrainingImage(c, image, sampleId, slug, bytes);
+      imageUrl = uploaded.publicUrl;
+      imageObjectKey = uploaded.objectKey;
+    }
+
+    const analysis = await openaiClient.analyzeTrainingSample({
+      category,
+      sourceUrl: sourceUrl || undefined,
+      title,
+      articleText,
+      imageDataUrl,
+    });
+    const now = new Date().toISOString();
+    await c.env.ADMIN_DB
+      .prepare(
+        'INSERT INTO training_samples (id, category, source_url, input_title, input_article, image_url, image_object_key, analysis_json, title_style, article_style, image_style, linking_style, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .bind(
+        sampleId,
+        category,
+        sourceUrl || null,
+        title || null,
+        articleText || null,
+        imageUrl,
+        imageObjectKey,
+        JSON.stringify(analysis),
+        analysis.title_style,
+        analysis.article_style,
+        analysis.image_style,
+        analysis.linking_style,
+        now,
+        now,
+      )
+      .run();
+
+    return c.json({ ok: true, analysis });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Training save failed';
+    console.error('Training error:', message);
+    return c.json({ ok: false, message: `Training save failed: ${message}` }, 500);
+  }
+});
+
+app.post('/api/seo-config', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const body = await c.req.json<{
+    category?: string;
+    titleTemplate?: string;
+    keywordFocus?: string;
+    readabilityRules?: string;
+    imageGuidance?: string;
+  }>();
+  const category = normalizeText(body.category) || 'Default';
+  const now = new Date().toISOString();
+
+  await c.env.ADMIN_DB
+    .prepare(
+      `INSERT INTO seo_config (id, category, canonical_tags, schema_types, keyword_focus, title_template, h_structure, readability_rules, image_guidance, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(category) DO UPDATE SET
+         keyword_focus = excluded.keyword_focus,
+         title_template = excluded.title_template,
+         readability_rules = excluded.readability_rules,
+         image_guidance = excluded.image_guidance,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      category,
+      'Use canonical URL for every published article',
+      'Article,BreadcrumbList,FAQPageSchema,OrganizationSchema,NewsArticleSchema',
+      normalizeText(body.keywordFocus) || 'Primary keyword naturally in first 100 words with related terms.',
+      normalizeText(body.titleTemplate) || 'Primary Keyword + Benefit + Year',
+      'H1 from article title, then H2/H3 hierarchy in body',
+      normalizeText(body.readabilityRules) || 'Small paragraphs, simple Hinglish, bullets, tables where useful.',
+      normalizeText(body.imageGuidance) || 'Google Discover-friendly 16:9 editorial image, AVIF delivery, descriptive alt.',
+      now,
+      now,
+    )
+    .run();
+
+  return c.json({ ok: true });
+});
+
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
   try {
     const body = await c.req.json<{
@@ -2591,9 +3160,22 @@ app.post('/api/articles/generate', async (c) => {
     });
     const openaiClient = getOpenAIClient();
 
-    const body = await c.req.json<{ title?: string; category?: string; sourceUrl?: string; authorId?: string }>();
+    const body = await c.req.json<{
+      title?: string;
+      category?: string;
+      sourceUrl?: string;
+      authorId?: string;
+      includeFaqs?: boolean;
+      includeToc?: boolean;
+      includeInternalLinks?: boolean;
+      includeExternalLinks?: boolean;
+      includeTables?: boolean;
+      useTrainingStyle?: boolean;
+      newsAngle?: boolean;
+    }>();
     const manualTitle = normalizeText(body.title);
     const requestedCategory = normalizeText(body.category) || 'News';
+    const controls = parseGenerationControls(body as Record<string, unknown>);
     const sourceUrl = normalizeText(body.sourceUrl);
     const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
     const source = sourceUrl ? await fetchReadablePageText(sourceUrl) : null;
@@ -2602,11 +3184,11 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
     }
 
-    const sourceBrief = source
+    const articleBrief = source
       ? await openaiClient.createArticleBriefFromSource(source, requestedCategory)
-      : null;
-    const title = normalizeText(sourceBrief?.blog_title) || manualTitle;
-    const category = normalizeText(sourceBrief?.category) || requestedCategory;
+      : await openaiClient.createHeadlineFromTitle(manualTitle, requestedCategory);
+    const title = normalizeText(articleBrief.blog_title) || manualTitle;
+    const category = normalizeText(articleBrief.category) || requestedCategory;
 
     const articleId = crypto.randomUUID();
     const slug = buildSlug(title, articleId);
@@ -2622,7 +3204,13 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
     }
 
-    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
+    const trainingNotes = await readTrainingNotesForCategory(c.env.ADMIN_DB, category);
+    const relatedArticles = await readRelatedArticlesForPrompt(c.env.ADMIN_DB, category, title);
+    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title, {
+      controls,
+      trainingNotes,
+      relatedArticles,
+    });
     const blogContent = await openaiClient.generateBlogContent(seoPrompt, title, source || undefined);
     const content = normalizeArticleContent(blogContent.content);
     if (!content) {

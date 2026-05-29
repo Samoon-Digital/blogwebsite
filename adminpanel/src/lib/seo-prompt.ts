@@ -14,10 +14,27 @@ interface SEOConfig {
     image_guidance: string | null;
 }
 
+export type SeoPromptControls = {
+    includeFaqs: boolean;
+    includeToc: boolean;
+    includeInternalLinks: boolean;
+    includeExternalLinks: boolean;
+    includeTables: boolean;
+    useTrainingStyle: boolean;
+    newsAngle: boolean;
+};
+
+export type SeoPromptContext = {
+    controls?: SeoPromptControls;
+    trainingNotes?: string[];
+    relatedArticles?: Array<{ title: string; slug: string; category?: string | null }>;
+};
+
 export async function buildSeoPrompt(
     db: D1Database,
     category: string,
     blogTitle: string,
+    context: SeoPromptContext = {},
 ): Promise<string> {
     // Fetch SEO config from database
     const seoConfig = await db
@@ -36,6 +53,21 @@ export async function buildSeoPrompt(
     const schemaTypes = config.schema_types
         ? config.schema_types.split(',').map((s) => s.trim())
         : [];
+    const controls = context.controls || {
+        includeFaqs: true,
+        includeToc: true,
+        includeInternalLinks: true,
+        includeExternalLinks: true,
+        includeTables: true,
+        useTrainingStyle: true,
+        newsAngle: true,
+    };
+    const trainingNotes = controls.useTrainingStyle && context.trainingNotes?.length
+        ? context.trainingNotes.map((note, index) => `${index + 1}. ${note}`).join('\n')
+        : 'No saved category training notes available.';
+    const relatedArticles = context.relatedArticles?.length
+        ? context.relatedArticles.map((article) => `- ${article.title}: /${article.slug}`).join('\n')
+        : 'No related internal articles available.';
 
     const systemPrompt = `
 # Blog Content Generation with SEO Optimization
@@ -46,12 +78,28 @@ Editorial focus:
 - Prefer news-style explainers: what happened, why it matters, who is affected, key facts, timeline, next steps.
 - Keep the tone clear, useful, trustworthy and engaging without clickbait.
 - When the topic is not breaking news, write it as a practical blog guide with a current-news angle where natural.
+- Treat the user title as a rough topic. Always create a short, catchy Hindi/Hinglish headline instead of copying rough wording exactly.
 
 ## Blog Title
 "${blogTitle}"
 
 ## Category
 "${category}"
+
+## Article Controls
+- FAQs: ${controls.includeFaqs ? 'ON - include helpful FAQ section and FAQ schema.' : 'OFF - do not include FAQ section or FAQ schema.'}
+- Table of Contents: ${controls.includeToc ? 'ON - include a compact table of contents for long articles.' : 'OFF - do not include table of contents.'}
+- Internal Links: ${controls.includeInternalLinks ? 'ON - add inline internal links from the provided related articles where natural.' : 'OFF - avoid internal links.'}
+- External Links: ${controls.includeExternalLinks ? 'ON - add authoritative external links where useful, especially for vacancy/student/government topics.' : 'OFF - avoid external links unless source citation is essential.'}
+- Tables: ${controls.includeTables ? 'ON - use simple comparison/date/eligibility tables where useful.' : 'OFF - avoid HTML tables.'}
+- Saved Training Style: ${controls.useTrainingStyle ? 'ON - follow category training notes below.' : 'OFF - ignore saved training notes.'}
+- News Angle: ${controls.newsAngle ? 'ON - write with a current news/explainer angle.' : 'OFF - write as an evergreen practical guide.'}
+
+## Category Training Notes
+${trainingNotes}
+
+## Related Internal Articles Available
+${relatedArticles}
 
 ## SEO Requirements
 
@@ -116,7 +164,7 @@ CRITICAL: First 100 words must:
 - Set expectations for content
 
 ### 8. FAQ Section (Powerful for SEO)
-Include 4-5 FAQ questions relevant to the topic:
+${controls.includeFaqs ? 'Include 4-5 FAQ questions relevant to the topic:' : 'Do not include FAQ questions for this article.'}
 - Format: Q: [Question], A: [Answer]
 - Include keyword variations in questions
 - Provide direct, helpful answers
@@ -127,7 +175,7 @@ Q: Waiting ticket confirm kab hota hai?
 A: [Clear, detailed answer]
 
 ### 9. Table of Contents (for long articles)
-If article is > 1000 words:
+${controls.includeToc ? 'If article is > 1000 words:' : 'Do not include a table of contents.'}
 - Add "Table of Contents" section
 - Link to all H2 and H3 headings
 - Improves user experience and SEO
@@ -138,18 +186,26 @@ ${config.readability_rules || 'Keep paragraphs small and simple'}
 - **Paragraphs**: 2-3 sentences maximum
 - **Language**: Simple Hindi/English mix (Hinglish)
 - **Lists**: Use bullet points for easy scanning
-- **Tables**: Comparisons (e.g., WL vs RAC)
+- **Tables**: ${controls.includeTables ? 'Use comparisons, dates, eligibility, fees, vacancy breakdowns, or important timelines when useful' : 'Avoid tables in this article'}
 - **Bold**: Highlight important terms and keywords
 - **Highlights**: Use blockquotes or boxes for key takeaways
 - **Images**: Mention where featured images should go
 - **DOM Size**: Keep HTML lean. Use semantic p, h2, h3, ul, ol, table only when useful. Avoid unnecessary wrapper divs and deeply nested elements.
 
 ### 11. Internal Linking
-Suggest internal links to related articles:
+${controls.includeInternalLinks ? 'Add inline internal links to related articles:' : 'Internal linking is OFF for this article.'}
 - Example: "PAN article → Link to Aadhaar article"
 - Example: "Railway article → Link to Tatkal article"
 - Improves crawlability and user engagement
-- Each article should link to 3-5 related articles
+- Use actual href values from "Related Internal Articles Available" when relevant.
+- Add links inside paragraphs naturally, not only at the bottom.
+
+### 11B. External Linking
+${controls.includeExternalLinks ? `For vacancy, student, admit card, result, scholarship, exam, government scheme, and application topics:
+- Add authoritative external links where useful.
+- Prefer official domains such as gov.in, nic.in, nta.ac.in, ssc.gov.in, upsc.gov.in, railway recruitment boards, university/exam portals, or the provided source URL.
+- External links must use target="_blank" rel="noopener noreferrer".
+- Do not invent fake official URLs. If exact official URL is not known, link to the provided source URL or write plain text without a link.` : 'External linking is OFF. Do not add external links except the source URL when citation is unavoidable.'}
 
 ### 12. Image SEO
 Generate featured image metadata:
@@ -197,6 +253,7 @@ Return ONLY valid JSON with this exact structure:
 6. **Uniqueness**: Create original content, not copied from other sources
 7. **Authority**: Cite sources where appropriate, build credibility
 8. **Body HTML Only**: Return only article body HTML in content. Do not include <html>, <head>, <body>, duplicate <title>, meta tags, or a duplicate <h1>.
+9. **Links**: Use valid <a href="..."> anchors. Internal links should point to site slugs like "/slug"; external links must use target="_blank" rel="noopener noreferrer".
 
 Generate a high-quality, SEO-optimized blog post now.
 `;
