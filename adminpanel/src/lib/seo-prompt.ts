@@ -89,7 +89,7 @@ Create 150-160 character description that:
 ${config.h_structure || 'H1 → H2 → H3 hierarchy'}
 
 Structure:
-- **H1** (1 per page): Main blog title, contains primary keyword
+- **H1** (1 per page): Main blog title, contains primary keyword. The website renderer adds this from the article title, so do not include an <h1> tag inside the returned content body.
 - **H2** (2-3 sections): Main topics, subheadings with variations of keyword
 - **H3** (under each H2): Detailed subtopics, specific points
 
@@ -150,8 +150,8 @@ Generate featured image metadata:
 ${config.image_guidance || 'Large images with emotional appeal'}
 
 Guidelines:
-- Filename: Descriptive, lowercase, hyphens (e.g., waiting-list-kya-hai.jpg)
-- Format: WebP preferred, JPG fallback
+- Filename: Descriptive, lowercase, hyphens (e.g., waiting-list-kya-hai.webp)
+- Format: WebP
 - Size: 1200x800px minimum
 - ALT text: Include primary keyword, descriptive (50-125 chars)
 
@@ -167,7 +167,7 @@ Return ONLY valid JSON with this exact structure:
   "meta_description": "Meta description (150-160 chars)",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
-  "content": "<h1>Main Title</h1><p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content...</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>Related Articles</h3><ul><li><a href=\"/articles/slug\">Article Title</a></li></ul></div>",
+  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content...</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>Related Articles</h3><ul><li><a href=\"/articles/slug\">Article Title</a></li></ul></div>",
   "schema_markup": {
     "article": { "type": "schema", "data": {} },
     "breadcrumb": { "type": "schema", "data": {} },
@@ -190,6 +190,7 @@ Return ONLY valid JSON with this exact structure:
 5. **Schema Validation**: Ensure schema markup is valid JSON-LD
 6. **Uniqueness**: Create original content, not copied from other sources
 7. **Authority**: Cite sources where appropriate, build credibility
+8. **Body HTML Only**: Return only article body HTML in content. Do not include <html>, <head>, <body>, duplicate <title>, meta tags, or a duplicate <h1>.
 
 Generate a high-quality, SEO-optimized blog post now.
 `;

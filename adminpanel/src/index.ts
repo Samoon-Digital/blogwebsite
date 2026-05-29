@@ -1,15 +1,17 @@
 import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
 import { buildSeoPrompt } from './lib/seo-prompt';
-import { initOpenAIClient, getOpenAIClient } from './lib/openai';
+import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage } from './lib/openai';
 
 type Bindings = {
   ADMIN_DB: D1Database;
+  ARTICLE_IMAGES?: R2Bucket;
   SESSION_SECRET: string;
   OPENAI_API_KEY: string;
   OPENAI_TRACKING_ID?: string;
   OPENAI_TEXT_MODEL?: string;
   OPENAI_IMAGE_MODEL?: string;
+  R2_PUBLIC_BASE_URL?: string;
 };
 
 type AdminUserRow = {
@@ -38,6 +40,10 @@ type ArticleRow = {
   seo_title: string | null;
   seo_description: string | null;
   featured_image_url?: string | null;
+  featured_image_alt?: string | null;
+  image_object_key?: string | null;
+  canonical_url?: string | null;
+  schema_markup?: string | null;
   status: string;
   author_id: string;
   created_at: string;
@@ -54,6 +60,10 @@ type PublicArticleRow = {
   seo_title: string | null;
   seo_description: string | null;
   featured_image_url: string | null;
+  featured_image_alt: string | null;
+  image_object_key: string | null;
+  canonical_url: string | null;
+  schema_markup: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -102,9 +112,38 @@ interface D1PreparedStatement {
   run(): Promise<void>;
 }
 
+interface R2Bucket {
+  put(
+    key: string,
+    value: ArrayBuffer | ArrayBufferView | string | ReadableStream,
+    options?: {
+      httpMetadata?: Record<string, string>;
+      customMetadata?: Record<string, string>;
+    },
+  ): Promise<unknown>;
+  get(key: string): Promise<R2ObjectBody | null>;
+}
+
+interface R2ObjectBody {
+  body: ReadableStream;
+  httpEtag: string;
+  writeHttpMetadata(headers: Headers): void;
+}
+
 const app = new Hono<{ Bindings: Bindings }>();
 const SESSION_COOKIE = 'samoondgital_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const PUBLIC_SITE_ORIGIN = 'https://laxy.in';
+
+function publicArticleUrl(slug: string) {
+  return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
+}
+
+function publicAssetUrl(c: Context<{ Bindings: Bindings }>, key: string) {
+  const configuredBase = normalizeText(c.env.R2_PUBLIC_BASE_URL).replace(/\/+$/g, '');
+  const baseUrl = configuredBase || `${PUBLIC_SITE_ORIGIN}/assets`;
+  return `${baseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`;
+}
 
 function escapeHtml(value: string) {
   return value
@@ -121,12 +160,48 @@ function normalizeText(value: unknown) {
 
 function slugify(value: string) {
   return value
+    .normalize('NFKD')
     .toLowerCase()
     .trim()
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function buildSlug(title: string, fallbackId: string) {
+  return slugify(title) || `article-${fallbackId.slice(0, 8)}`;
+}
+
+function stripHtml(value: string) {
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function makeExcerpt(content: string, fallback: string) {
+  const text = stripHtml(content) || fallback;
+  return text.length > 300 ? `${text.slice(0, 297).trim()}...` : text;
+}
+
+function normalizeArticleContent(content: string) {
+  return content
+    .replace(/^\s*<h1\b[^>]*>[\s\S]*?<\/h1>\s*/i, '')
+    .replace(/^\s*```(?:html)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+}
+
+function stringifySchemaMarkup(schemaMarkup: GeneratedBlogContent['schema_markup']) {
+  try {
+    return JSON.stringify(schemaMarkup || {});
+  } catch {
+    return '{}';
+  }
 }
 
 function articleStatusTone(status: string) {
@@ -207,6 +282,83 @@ async function queryAll<T>(statement: D1PreparedStatement) {
   return result?.results ?? [];
 }
 
+async function uploadFeaturedImage(
+  c: Context<{ Bindings: Bindings }>,
+  image: GeneratedImage,
+  articleId: string,
+  slug: string,
+) {
+  if (!c.env.ARTICLE_IMAGES) {
+    throw new Error('R2 bucket binding ARTICLE_IMAGES is not configured');
+  }
+
+  const objectKey = `featured-images/${slug}-${articleId}.${image.extension}`;
+  await c.env.ARTICLE_IMAGES.put(objectKey, image.bytes, {
+    httpMetadata: {
+      contentType: image.contentType,
+      cacheControl: 'public, max-age=31536000, immutable',
+    },
+    customMetadata: {
+      articleId,
+      altText: image.altText,
+      provider: 'openai',
+    },
+  });
+
+  return {
+    objectKey,
+    publicUrl: publicAssetUrl(c, objectKey),
+  };
+}
+
+async function recordMediaAsset(
+  db: D1Database,
+  articleId: string,
+  objectKey: string,
+  publicUrl: string,
+  image: GeneratedImage,
+) {
+  await db
+    .prepare(
+      'INSERT INTO media_assets (id, article_id, object_key, public_url, content_type, alt_text, provider, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .bind(
+      crypto.randomUUID(),
+      articleId,
+      objectKey,
+      publicUrl,
+      image.contentType,
+      image.altText,
+      'openai',
+      new Date().toISOString(),
+    )
+    .run();
+}
+
+async function servePublicAsset(c: Context<{ Bindings: Bindings }>, key: string) {
+  if (!c.env.ARTICLE_IMAGES) {
+    return c.text('Assets bucket is not configured', 500);
+  }
+
+  if (!key || key.includes('..')) {
+    return c.text('Not found', 404);
+  }
+
+  const object = await c.env.ARTICLE_IMAGES.get(key);
+  if (!object) {
+    return c.text('Not found', 404);
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  if (!headers.has('cache-control')) {
+    headers.set('cache-control', 'public, max-age=31536000, immutable');
+  }
+
+  return new Response(object.body, { headers });
+}
+
 async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
   try {
     const metricRows = await queryAll<ArticleMetricRow>(
@@ -257,7 +409,7 @@ async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
 async function readArticles(db: D1Database) {
   return queryAll<ArticleRow>(
     db.prepare(
-      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
+      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
     ),
   );
 }
@@ -265,7 +417,7 @@ async function readArticles(db: D1Database) {
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24",
+      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24",
     ),
   );
 }
@@ -273,10 +425,19 @@ async function readPublishedArticles(db: D1Database) {
 async function readPublishedArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, created_at, updated_at FROM articles WHERE slug = ? AND status = 'published' LIMIT 1",
+      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE slug = ? AND status = 'published' LIMIT 1",
     )
     .bind(slug)
     .first<PublicArticleRow>();
+}
+
+async function readArticleById(db: D1Database, id: string) {
+  return db
+    .prepare(
+      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at FROM articles WHERE id = ? LIMIT 1',
+    )
+    .bind(id)
+    .first<ArticleRow>();
 }
 
 function shellStyles() {
@@ -325,6 +486,18 @@ function shellStyles() {
     .notice:empty { display: none; }
     .notice.ok { border-color: #111; color: #111; background: #f8f8f8; }
     .notice.error { border-color: #d00; color: #d00; background: #fff5f5; }
+    .progress-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); }
+    .progress-panel[hidden] { display: none; }
+    .progress-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 0.875rem; color: var(--text-muted); }
+    .progress-top strong { color: var(--text); font-weight: 600; }
+    .progress-track { height: 8px; border-radius: 999px; background: #e9e9e9; overflow: hidden; }
+    .progress-bar { width: 8%; height: 100%; background: var(--btn-primary-bg); transition: width 0.35s ease; }
+    .progress-steps { display: grid; gap: 6px; }
+    .progress-step { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--text-muted); }
+    .progress-dot { width: 8px; height: 8px; border-radius: 99px; border: 1px solid var(--text-dim); flex: 0 0 auto; }
+    .progress-step.active { color: var(--text); font-weight: 500; }
+    .progress-step.active .progress-dot { background: var(--text); border-color: var(--text); }
+    .progress-step.done .progress-dot { background: #0f7b45; border-color: #0f7b45; }
     .app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
     .sidebar { background: var(--bg-subtle); border-right: 1px solid var(--border); padding: 20px 16px; display: flex; flex-direction: column; gap: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
     .sidebar-brand { padding: 4px 8px 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
@@ -411,6 +584,10 @@ function publicStyles() {
     .article-head { display: grid; gap: 14px; padding-bottom: 24px; }
     .article h1 { max-width: 900px; font-size: clamp(2rem, 4vw, 3.5rem); line-height: 1.08; letter-spacing: 0; }
     .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1.05rem; }
+    .breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.84rem; }
+    .breadcrumbs a { color: var(--accent); }
+    .preview-banner { border-bottom: 1px solid var(--border); background: #111; color: #fff; font-size: 0.88rem; }
+    .preview-banner .wrap { padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .featured { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); margin: 8px 0 28px; background: var(--soft); }
     .content { max-width: 760px; font-size: 1.03rem; line-height: 1.8; }
     .content h1, .content h2, .content h3 { line-height: 1.25; margin: 1.6em 0 0.55em; letter-spacing: 0; }
@@ -425,7 +602,7 @@ function publicStyles() {
   `;
 }
 
-function publicShell(title: string, description: string, content: string) {
+function publicShell(title: string, description: string, content: string, headExtras = '') {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -433,6 +610,7 @@ function publicShell(title: string, description: string, content: string) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
+  ${headExtras}
   <style>${publicStyles()}</style>
 </head>
 <body>
@@ -451,12 +629,133 @@ function publicShell(title: string, description: string, content: string) {
 </html>`;
 }
 
+function escapeJsonForHtml(value: unknown) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
+function jsonLdScript(value: unknown) {
+  return `<script type="application/ld+json">${escapeJsonForHtml(value)}</script>`;
+}
+
+function storedSchemaObjects(schemaMarkup: string | null | undefined) {
+  if (!schemaMarkup) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(schemaMarkup) as unknown;
+    const candidates = Array.isArray(parsed) ? parsed : Object.values(parsed as Record<string, unknown>);
+    return candidates
+      .map((item) => {
+        const maybeSchema = item as { data?: unknown };
+        return maybeSchema?.data || item;
+      })
+      .filter((item): item is Record<string, unknown> => {
+        return Boolean(item && typeof item === 'object' && '@type' in item);
+      });
+  } catch {
+    return [];
+  }
+}
+
+function organizationJsonLd() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: 'Laxy.in',
+    url: PUBLIC_SITE_ORIGIN,
+  };
+}
+
+function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
+  const image = article.featured_image_url || undefined;
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BlogPosting',
+    headline: article.seo_title || article.title,
+    description: article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
+    image,
+    datePublished: article.created_at,
+    dateModified: article.updated_at,
+    author: {
+      '@type': 'Organization',
+      name: 'Samoon Digital',
+    },
+    publisher: organizationJsonLd(),
+    mainEntityOfPage: {
+      '@type': 'WebPage',
+      '@id': canonicalUrl,
+    },
+  };
+}
+
+function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
+  const items = [
+    {
+      '@type': 'ListItem',
+      position: 1,
+      name: 'Home',
+      item: PUBLIC_SITE_ORIGIN,
+    },
+  ];
+
+  if (article.category) {
+    items.push({
+      '@type': 'ListItem',
+      position: 2,
+      name: article.category,
+      item: `${PUBLIC_SITE_ORIGIN}/?category=${encodeURIComponent(article.category)}`,
+    });
+  }
+
+  items.push({
+    '@type': 'ListItem',
+    position: items.length + 1,
+    name: article.title,
+    item: canonicalUrl,
+  });
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items,
+  };
+}
+
+function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: boolean) {
+  const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
+  const description = article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`;
+  const image = article.featured_image_url || '';
+  const schemaObjects = [
+    articleJsonLd(article, canonicalUrl),
+    breadcrumbJsonLd(article, canonicalUrl),
+    organizationJsonLd(),
+    ...storedSchemaObjects(article.schema_markup),
+  ];
+
+  return `
+  <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+  ${preview ? '<meta name="robots" content="noindex,nofollow" />' : ''}
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="${escapeHtml(article.seo_title || article.title)}" />
+  <meta property="og:description" content="${escapeHtml(description)}" />
+  <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
+  ${image ? `<meta property="og:image" content="${escapeHtml(image)}" />` : ''}
+  <meta name="twitter:card" content="${image ? 'summary_large_image' : 'summary'}" />
+  <meta name="twitter:title" content="${escapeHtml(article.seo_title || article.title)}" />
+  <meta name="twitter:description" content="${escapeHtml(description)}" />
+  ${schemaObjects.map(jsonLdScript).join('\n  ')}`;
+}
+
 function publicHomePage(articles: PublicArticleRow[]) {
   const cards = articles.length
     ? `<section class="wrap grid">${articles
       .map((article) => {
         const image = article.featured_image_url
-          ? `<img src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.title)}" loading="lazy" />`
+          ? `<img src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="lazy" />`
           : '';
         return `<a class="post-card" href="/${escapeHtml(article.slug)}">
           ${image}
@@ -478,16 +777,26 @@ function publicHomePage(articles: PublicArticleRow[]) {
   );
 }
 
-function publicArticlePage(article: PublicArticleRow) {
+function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean } = {}) {
+  const preview = Boolean(options.preview);
   const image = article.featured_image_url
-    ? `<img class="featured" src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.title)}" />`
+    ? `<img class="featured" src="${escapeHtml(article.featured_image_url)}" alt="${escapeHtml(article.featured_image_alt || article.title)}" />`
+    : '';
+  const breadcrumbTrail = article.category
+    ? `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.category)}</span><span>/</span><span>${escapeHtml(article.title)}</span>`
+    : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
+  const previewBanner = preview
+    ? `<div class="preview-banner"><div class="wrap"><strong>Draft preview</strong><span>Public site par publish hone se pehle ka preview.</span></div></div>`
     : '';
 
   return publicShell(
     article.seo_title || article.title,
     article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
-    `<main class="wrap article">
+    `${previewBanner}<main class="wrap article">
       <header class="article-head">
+        <nav class="breadcrumbs" aria-label="Breadcrumb">
+          ${breadcrumbTrail}
+        </nav>
         <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
         <h1>${escapeHtml(article.title)}</h1>
         <p class="dek">${escapeHtml(article.excerpt || article.seo_description || '')}</p>
@@ -496,6 +805,7 @@ function publicArticlePage(article: PublicArticleRow) {
       ${image}
       <article class="content">${article.content}</article>
     </main>`,
+    articleHeadExtras(article, preview),
   );
 }
 
@@ -509,6 +819,11 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   if (url.pathname === '/' || url.pathname === '') {
     const articles = await readPublishedArticles(c.env.ADMIN_DB);
     return c.html(publicHomePage(articles));
+  }
+
+  if (url.pathname.startsWith('/assets/')) {
+    const key = decodeURIComponent(url.pathname.slice('/assets/'.length));
+    return servePublicAsset(c, key);
   }
 
   const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''));
@@ -728,7 +1043,8 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
               ${a.status === 'published'
             ? `<a class="btn btn-secondary" href="https://laxy.in/${escapeHtml(a.slug)}" target="_blank" rel="noopener">View Live</a>
                    <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Move to Draft</button>`
-            : `<button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
+            : `<a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/preview" target="_blank" rel="noopener">Preview</a>
+                   <button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
             </div>
           </article>`,
       )
@@ -809,6 +1125,11 @@ function aiGenerationPage(user: SessionUser) {
               </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
               <div class="notice" id="gen-notice"></div>
+              <div class="progress-panel" id="gen-progress" hidden>
+                <div class="progress-top"><strong id="gen-progress-label">Preparing</strong><span id="gen-progress-percent">0%</span></div>
+                <div class="progress-track"><div class="progress-bar" id="gen-progress-bar"></div></div>
+                <div class="progress-steps" id="gen-progress-steps"></div>
+              </div>
             </form>
           </div>
         </div>
@@ -828,7 +1149,7 @@ function aiGenerationPage(user: SessionUser) {
             <div class="card-header"><h2>Workflow</h2></div>
             <div class="card-body">
               <div class="item-list">
-                <div class="item-row"><div><div class="title">1. Enter title &amp; category</div><div class="meta">Takes 2-3 minutes</div></div></div>
+                <div class="item-row"><div><div class="title">1. Enter title &amp; category</div><div class="meta">Live progress visible rahega</div></div></div>
                 <div class="item-row"><div><div class="title">2. Review draft</div><div class="meta">Saved as Draft automatically</div></div></div>
                 <div class="item-row"><div><div class="title">3. Publish</div><div class="meta">Approve when satisfied</div></div></div>
               </div>
@@ -840,12 +1161,55 @@ function aiGenerationPage(user: SessionUser) {
         const form = document.getElementById('ai-form');
         const notice = document.getElementById('gen-notice');
         const btn = document.getElementById('gen-btn');
+        const progress = document.getElementById('gen-progress');
+        const progressLabel = document.getElementById('gen-progress-label');
+        const progressPercent = document.getElementById('gen-progress-percent');
+        const progressBar = document.getElementById('gen-progress-bar');
+        const progressSteps = document.getElementById('gen-progress-steps');
+        const genSteps = [
+          'SEO prompt and category rules loading',
+          'OpenAI article JSON writing',
+          'Featured image prompt preparing',
+          'WebP featured image generating',
+          'R2 upload and draft save'
+        ];
+        let progressTimer;
+
+        function setProgress(index, percent) {
+          progress.hidden = false;
+          progressLabel.textContent = genSteps[index] || 'Finishing';
+          progressPercent.textContent = Math.round(percent) + '%';
+          progressBar.style.width = Math.max(8, Math.min(100, percent)) + '%';
+          progressSteps.innerHTML = genSteps.map((step, i) => {
+            const state = i < index ? 'done' : i === index ? 'active' : '';
+            return '<div class="progress-step ' + state + '"><span class="progress-dot"></span><span>' + step + '</span></div>';
+          }).join('');
+        }
+
+        function startProgress() {
+          let index = 0;
+          let percent = 8;
+          setProgress(index, percent);
+          clearInterval(progressTimer);
+          progressTimer = setInterval(() => {
+            percent = Math.min(92, percent + 7);
+            index = Math.min(genSteps.length - 1, Math.floor((percent / 100) * genSteps.length));
+            setProgress(index, percent);
+          }, 4500);
+        }
+
+        function finishProgress() {
+          clearInterval(progressTimer);
+          setProgress(genSteps.length - 1, 100);
+        }
+
         form.addEventListener('submit', async (e) => {
           e.preventDefault();
           notice.textContent = '';
           notice.className = 'notice';
           btn.disabled = true;
-          btn.textContent = 'Generating... (2-3 min)';
+          btn.textContent = 'Generating...';
+          startProgress();
           try {
             const res = await fetch('/api/articles/generate', {
               method: 'POST',
@@ -857,10 +1221,12 @@ function aiGenerationPage(user: SessionUser) {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.message || 'Generation failed');
-            notice.textContent = 'Article generated! Redirecting...';
+            finishProgress();
+            notice.textContent = 'Draft ready. Opening preview...';
             notice.className = 'notice ok';
-            setTimeout(() => { window.location.href = '/articles?generated=1'; }, 1500);
+            setTimeout(() => { window.location.href = '/articles/' + encodeURIComponent(data.article.id) + '/preview'; }, 900);
           } catch (err) {
+            clearInterval(progressTimer);
             notice.textContent = err.message || 'Failed to generate article';
             notice.className = 'notice error';
             btn.disabled = false;
@@ -938,6 +1304,11 @@ function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = ''
     toolbar: '',
     content: `
       <div id="page-notice" class="notice ok" style="${message ? '' : 'display:none;'}">${escapeHtml(message)}</div>
+      <div class="progress-panel" id="scan-progress" hidden>
+        <div class="progress-top"><strong id="scan-progress-label">Preparing</strong><span id="scan-progress-percent">0%</span></div>
+        <div class="progress-track"><div class="progress-bar" id="scan-progress-bar"></div></div>
+        <div class="progress-steps" id="scan-progress-steps"></div>
+      </div>
       <div class="cols-aside">
         <div class="card">
           <div class="card-header">
@@ -1060,22 +1431,67 @@ function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = ''
           } catch (err) { alert(err.message); btn.disabled = false; }
         }
 
+        const scanProgress = document.getElementById('scan-progress');
+        const scanProgressLabel = document.getElementById('scan-progress-label');
+        const scanProgressPercent = document.getElementById('scan-progress-percent');
+        const scanProgressBar = document.getElementById('scan-progress-bar');
+        const scanProgressSteps = document.getElementById('scan-progress-steps');
+        const scanSteps = [
+          'Website content fetching',
+          'Best blog topic identifying',
+          'SEO article writing',
+          'WebP featured image generating',
+          'R2 upload and draft save'
+        ];
+        let scanProgressTimer;
+
+        function setScanProgress(index, percent) {
+          scanProgress.hidden = false;
+          scanProgressLabel.textContent = scanSteps[index] || 'Finishing';
+          scanProgressPercent.textContent = Math.round(percent) + '%';
+          scanProgressBar.style.width = Math.max(8, Math.min(100, percent)) + '%';
+          scanProgressSteps.innerHTML = scanSteps.map((step, i) => {
+            const state = i < index ? 'done' : i === index ? 'active' : '';
+            return '<div class="progress-step ' + state + '"><span class="progress-dot"></span><span>' + step + '</span></div>';
+          }).join('');
+        }
+
+        function startScanProgress() {
+          let index = 0;
+          let percent = 8;
+          setScanProgress(index, percent);
+          clearInterval(scanProgressTimer);
+          scanProgressTimer = setInterval(() => {
+            percent = Math.min(92, percent + 6);
+            index = Math.min(scanSteps.length - 1, Math.floor((percent / 100) * scanSteps.length));
+            setScanProgress(index, percent);
+          }, 5000);
+        }
+
+        function finishScanProgress() {
+          clearInterval(scanProgressTimer);
+          setScanProgress(scanSteps.length - 1, 100);
+        }
+
         async function scanNow(id, btn) {
           const origText = btn.textContent;
           btn.disabled = true;
-          btn.textContent = 'Scanning... (2-3 min)';
+          btn.textContent = 'Scanning...';
           const notice = document.getElementById('page-notice');
           notice.style.display = 'none';
+          startScanProgress();
           try {
             const res = await fetch('/api/websites/' + id + '/scan', { method: 'POST' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.message || 'Scan failed');
+            finishScanProgress();
             notice.textContent = data.message || 'Blog generated!';
             notice.className = 'notice ok';
             notice.style.display = '';
             btn.textContent = 'Done!';
             setTimeout(() => window.location.reload(), 2500);
           } catch (err) {
+            clearInterval(scanProgressTimer);
             notice.textContent = err.message;
             notice.className = 'notice error';
             notice.style.display = '';
@@ -1120,6 +1536,8 @@ app.get('/articles', async (c) => {
   const articles = await readArticles(c.env.ADMIN_DB);
   const message = url.searchParams.get('created')
     ? 'Article D1 database me save ho gaya.'
+    : url.searchParams.get('generated')
+      ? 'AI-generated article draft me save ho gaya. Preview karke publish karein.'
     : url.searchParams.get('status') === 'published'
       ? 'Article live publish ho gaya.'
       : url.searchParams.get('status') === 'draft'
@@ -1136,6 +1554,29 @@ app.get('/articles/new', async (c) => {
   }
 
   return c.html(aiGenerationPage(session));
+});
+
+app.get('/articles/:id/preview', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.redirect('/');
+  }
+
+  const article = await readArticleById(c.env.ADMIN_DB, c.req.param('id'));
+  if (!article) {
+    return c.html(
+      publicShell(
+        'Preview not found - Samoon Digital',
+        'The requested draft preview could not be found.',
+        '<main class="wrap empty">Draft preview nahi mila. <a href="/articles">Articles</a> par wapas jayen.</main>',
+        '<meta name="robots" content="noindex,nofollow" />',
+      ),
+      404,
+    );
+  }
+
+  return c.html(publicArticlePage(article, { preview: article.status !== 'published' }));
 });
 
 app.get('/categories', async (c) => {
@@ -1295,46 +1736,60 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'Blog title is required' }, 400);
     }
 
-    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
-    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
-    const featuredImageUrl = await openaiClient.generateFeaturedImage(
-      blogContent.featured_image_prompt,
-      title,
-    );
-
     const articleId = crypto.randomUUID();
-    const slug = slugify(title);
+    const slug = buildSlug(title, articleId);
     const now = new Date().toISOString();
+    const canonicalUrl = publicArticleUrl(slug);
 
     const existingArticle = await c.env.ADMIN_DB
-      .prepare('SELECT id FROM articles WHERE slug = ?')
-      .bind(slug)
+      .prepare('SELECT id FROM articles WHERE slug = ? OR lower(title) = lower(?) LIMIT 1')
+      .bind(slug, title)
       .first<{ id: string }>();
 
     if (existingArticle) {
       return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
     }
 
+    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
+    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
+    const content = normalizeArticleContent(blogContent.content);
+    if (!content) {
+      throw new Error('OpenAI blog response produced an empty article body');
+    }
+    const image = await openaiClient.generateFeaturedImage(
+      blogContent.featured_image_prompt,
+      title,
+      blogContent.featured_image_alt,
+    );
+    const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
+    const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
+
     await c.env.ADMIN_DB
       .prepare(
-        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .bind(
         articleId,
         title,
         slug,
-        blogContent.content.substring(0, 300),
-        blogContent.content,
+        makeExcerpt(content, blogContent.meta_description || title),
+        content,
         category,
         blogContent.seo_title,
         blogContent.meta_description,
-        featuredImageUrl,
+        uploadedImage.publicUrl,
+        image.altText,
+        uploadedImage.objectKey,
+        canonicalUrl,
+        schemaMarkup,
         'draft',
         session.id,
         now,
         now,
       )
       .run();
+
+    await recordMediaAsset(c.env.ADMIN_DB, articleId, uploadedImage.objectKey, uploadedImage.publicUrl, image);
 
     return c.json({
       ok: true,
@@ -1447,26 +1902,57 @@ app.post('/api/websites/:id/scan', async (c) => {
 
     if (!title) return c.json({ ok: false, message: 'AI koi suitable blog topic identify nahi kar saka' }, 400);
 
-    // 3. Check duplicate slug
-    const slug = slugify(title);
+    // 3. Check duplicate slug/title
+    const articleId = crypto.randomUUID();
+    const slug = buildSlug(title, articleId);
     const existing = await c.env.ADMIN_DB
-      .prepare('SELECT id FROM articles WHERE slug = ?')
-      .bind(slug)
+      .prepare('SELECT id FROM articles WHERE slug = ? OR lower(title) = lower(?) LIMIT 1')
+      .bind(slug, title)
       .first<{ id: string }>();
     if (existing) return c.json({ ok: false, message: `"${title}" topic par blog already exist karta hai` }, 409);
 
     // 4. Generate full blog content + featured image
     const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
     const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
-    const featuredImageUrl = await openaiClient.generateFeaturedImage(blogContent.featured_image_prompt, title);
+    const content = normalizeArticleContent(blogContent.content);
+    if (!content) {
+      throw new Error('OpenAI blog response produced an empty article body');
+    }
+    const image = await openaiClient.generateFeaturedImage(
+      blogContent.featured_image_prompt,
+      title,
+      blogContent.featured_image_alt,
+    );
+    const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
+    const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
 
     // 5. Save article as draft
-    const articleId = crypto.randomUUID();
     const now = new Date().toISOString();
+    const canonicalUrl = publicArticleUrl(slug);
     await c.env.ADMIN_DB
-      .prepare('INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(articleId, title, slug, blogContent.content.substring(0, 300), blogContent.content, category, blogContent.seo_title, blogContent.meta_description, featuredImageUrl, 'draft', session.id, now, now)
+      .prepare('INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(
+        articleId,
+        title,
+        slug,
+        makeExcerpt(content, blogContent.meta_description || title),
+        content,
+        category,
+        blogContent.seo_title,
+        blogContent.meta_description,
+        uploadedImage.publicUrl,
+        image.altText,
+        uploadedImage.objectKey,
+        canonicalUrl,
+        schemaMarkup,
+        'draft',
+        session.id,
+        now,
+        now,
+      )
       .run();
+
+    await recordMediaAsset(c.env.ADMIN_DB, articleId, uploadedImage.objectKey, uploadedImage.publicUrl, image);
 
     // 6. Update website scan record
     await c.env.ADMIN_DB
