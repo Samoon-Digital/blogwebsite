@@ -147,7 +147,7 @@ class OpenAIClient {
             body: JSON.stringify({
                 model: this.textModel,
                 instructions: systemPrompt,
-                input: userPrompt,
+                input: `${userPrompt}\n\nReturn valid JSON only.`,
                 max_output_tokens: maxOutputTokens,
                 text: {
                     format: { type: 'json_object' },
