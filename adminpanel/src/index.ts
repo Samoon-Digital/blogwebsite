@@ -82,15 +82,14 @@ type ArticleMetricRow = {
   total: number | string;
 };
 
-type MonitoredWebsite = {
+type CategoryRow = {
   id: string;
-  label: string;
-  url: string;
-  category: string;
-  scan_frequency_hours: number;
-  last_scanned_at: string | null;
-  last_topic_found: string | null;
+  name: string;
+  slug: string;
+  description: string | null;
+  sort_order: number | string;
   created_at: string;
+  updated_at: string;
 };
 
 type DashboardMetrics = {
@@ -157,6 +156,7 @@ function optimizedImageUrl(url: string, width: number, quality = 72) {
   const parsed = new URL(url);
   parsed.searchParams.set('w', String(width));
   parsed.searchParams.set('q', String(quality));
+  parsed.searchParams.set('f', 'avif');
   return parsed.toString();
 }
 
@@ -221,6 +221,45 @@ function normalizeArticleContent(content: string) {
     .replace(/^\s*```(?:html)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
+}
+
+async function fetchReadablePageText(sourceUrl: string) {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(sourceUrl);
+  } catch {
+    throw new Error('Source URL format invalid hai');
+  }
+
+  if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+    throw new Error('Source URL http ya https hona chahiye');
+  }
+
+  const response = await fetch(parsedUrl.toString(), {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; Laxy-NewsBot/1.0)',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Source URL fetch failed: HTTP ${response.status}`);
+  }
+
+  const html = await response.text();
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const pageTitle = titleMatch ? stripHtml(titleMatch[1]) : '';
+  const text = stripHtml(html);
+
+  if (text.length < 200) {
+    throw new Error('Source URL se kaafi readable content nahi mila');
+  }
+
+  return {
+    url: parsedUrl.toString(),
+    title: pageTitle,
+    text: text.slice(0, 12000),
+  };
 }
 
 function stringifySchemaMarkup(schemaMarkup: GeneratedBlogContent['schema_markup']) {
@@ -320,6 +359,7 @@ async function uploadFeaturedImage(
   }
 
   const objectKey = `featured-images/${slug}-${articleId}.${image.extension}`;
+  const sourceUrl = publicAssetUrl(c, objectKey);
   await c.env.ARTICLE_IMAGES.put(objectKey, image.bytes, {
     httpMetadata: {
       contentType: image.contentType,
@@ -334,7 +374,7 @@ async function uploadFeaturedImage(
 
   return {
     objectKey,
-    publicUrl: publicAssetUrl(c, objectKey),
+    publicUrl: optimizedImageUrl(sourceUrl, 1200, 72),
   };
 }
 
@@ -377,6 +417,8 @@ async function servePublicAsset(c: Context<{ Bindings: Bindings }>, key: string)
   if (widthParam) {
     const width = clampNumber(widthParam, 240, 1600, 960);
     const quality = clampNumber(url.searchParams.get('q'), 55, 82, 72);
+    const formatParam = normalizeText(url.searchParams.get('f')).toLowerCase();
+    const format = formatParam === 'webp' || formatParam === 'avif' ? formatParam : 'avif';
     const sourceUrl = new URL(c.req.url);
     sourceUrl.search = '';
     const resizedResponse = await fetch(sourceUrl.toString(), {
@@ -385,7 +427,7 @@ async function servePublicAsset(c: Context<{ Bindings: Bindings }>, key: string)
           width,
           quality,
           fit: 'cover',
-          format: 'webp',
+          format,
         },
       },
     } as RequestInit);
@@ -493,6 +535,33 @@ async function readArticleById(db: D1Database, id: string) {
     )
     .bind(id)
     .first<ArticleRow>();
+}
+
+async function readCategories(db: D1Database) {
+  return queryAll<CategoryRow>(
+    db.prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories ORDER BY sort_order ASC, name ASC'),
+  );
+}
+
+function renderCategoryOptions(categories: CategoryRow[], selected = '') {
+  const source = categories.length
+    ? categories
+    : [
+      { name: 'News', slug: 'news' },
+      { name: 'Government', slug: 'government' },
+      { name: 'Education', slug: 'education' },
+      { name: 'Finance', slug: 'finance' },
+      { name: 'Technology', slug: 'technology' },
+      { name: 'Default', slug: 'default' },
+    ];
+
+  return source
+    .map((category) => {
+      const name = 'name' in category ? category.name : String(category);
+      const value = name;
+      return `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+    })
+    .join('');
 }
 
 function shellStyles() {
@@ -972,7 +1041,7 @@ function loginPage(error = '') {
 function appShellPage(
   user: SessionUser,
   options: {
-    activeNav: 'dashboard' | 'articles' | 'categories' | 'seo' | 'websites';
+    activeNav: 'dashboard' | 'articles' | 'categories' | 'seo';
     pageTitle: string;
     eyebrow: string;
     title: string;
@@ -1000,7 +1069,6 @@ function appShellPage(
       ${navItem('/articles', 'Articles', options.activeNav === 'articles')}
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
       ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
-      ${navItem('/websites', 'Website Monitor', options.activeNav === 'websites')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
           <strong>${escapeHtml(user.displayName)}</strong>
@@ -1152,13 +1220,13 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
 }
 
 
-function aiGenerationPage(user: SessionUser) {
+function aiGenerationPage(user: SessionUser, categories: CategoryRow[]) {
   return appShellPage(user, {
     activeNav: 'articles',
     pageTitle: 'Generate Article — Samoon Digital',
     eyebrow: 'AI Generator',
     title: 'Generate Article with AI',
-    subtitle: 'Enter a title and category. GPT-5.5 writes a full SEO-optimized article and GPT Image creates the featured image.',
+    subtitle: 'Paste a source link for a Hindi news-style rewrite, or enter a title for a fresh article.',
     toolbar: `<a class="btn btn-secondary" href="/articles">Back to Articles</a>`,
     content: `
       <div class="cols-aside">
@@ -1167,21 +1235,18 @@ function aiGenerationPage(user: SessionUser) {
           <div class="card-body">
             <form class="form" id="ai-form">
               <div class="field">
+                <label for="source-url">Paste Link Here</label>
+                <input id="source-url" name="source_url" type="url" placeholder="https://example.com/news/article" />
+              </div>
+              <div class="field">
                 <label for="title">Blog Title</label>
-                <input id="title" name="title" placeholder="e.g., Waiting List Kya Hai" required />
+                <input id="title" name="title" placeholder="e.g., Waiting List Kya Hai" />
               </div>
               <div class="field">
                 <label for="category">Category</label>
                 <select id="category" name="category" required>
                   <option value="">Select category...</option>
-                  <option value="Railway">Railway</option>
-                  <option value="Government">Government</option>
-                  <option value="Technology">Technology</option>
-                  <option value="Business">Business</option>
-                  <option value="News">News</option>
-                  <option value="Education">Education</option>
-                  <option value="Finance">Finance</option>
-                  <option value="Default">General</option>
+                  ${renderCategoryOptions(categories, 'News')}
                 </select>
               </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
@@ -1201,7 +1266,7 @@ function aiGenerationPage(user: SessionUser) {
               <div class="item-list">
                 <div class="item-row"><div class="title">SEO-optimized blog content</div></div>
                 <div class="item-row"><div class="title">Schema markup (FAQ, Article)</div></div>
-                <div class="item-row"><div class="title">GPT Image featured image</div></div>
+                <div class="item-row"><div class="title">AVIF-ready featured image delivery</div></div>
                 <div class="item-row"><div class="title">Meta title &amp; description</div></div>
               </div>
             </div>
@@ -1210,7 +1275,7 @@ function aiGenerationPage(user: SessionUser) {
             <div class="card-header"><h2>Workflow</h2></div>
             <div class="card-body">
               <div class="item-list">
-                <div class="item-row"><div><div class="title">1. Enter title &amp; category</div><div class="meta">Live progress visible rahega</div></div></div>
+                <div class="item-row"><div><div class="title">1. Paste link or enter title</div><div class="meta">Link se auto Hindi news draft banega</div></div></div>
                 <div class="item-row"><div><div class="title">2. Review draft</div><div class="meta">Saved as Draft automatically</div></div></div>
                 <div class="item-row"><div><div class="title">3. Publish</div><div class="meta">Approve when satisfied</div></div></div>
               </div>
@@ -1229,9 +1294,9 @@ function aiGenerationPage(user: SessionUser) {
         const progressSteps = document.getElementById('gen-progress-steps');
         const genSteps = [
           'SEO prompt and category rules loading',
-          'OpenAI article JSON writing',
+          'Source reading and Hindi news article writing',
           'Featured image prompt preparing',
-          'WebP featured image generating',
+          'AVIF-ready featured image preparing',
           'R2 upload and draft save'
         ];
         let progressTimer;
@@ -1270,13 +1335,23 @@ function aiGenerationPage(user: SessionUser) {
           notice.className = 'notice';
           btn.disabled = true;
           btn.textContent = 'Generating...';
+          const sourceUrl = document.getElementById('source-url').value.trim();
+          const title = document.getElementById('title').value.trim();
+          if (!sourceUrl && !title) {
+            notice.textContent = 'Paste link ya Blog Title me se ek required hai.';
+            notice.className = 'notice error';
+            btn.disabled = false;
+            btn.textContent = 'Generate with AI';
+            return;
+          }
           startProgress();
           try {
             const res = await fetch('/api/articles/generate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                title: document.getElementById('title').value,
+                sourceUrl,
+                title,
                 category: document.getElementById('category').value,
               }),
             });
@@ -1300,16 +1375,165 @@ function aiGenerationPage(user: SessionUser) {
 }
 
 
+function categoriesPage(user: SessionUser, categories: CategoryRow[], message = '') {
+  const rows = categories.length
+    ? categories
+      .map(
+        (category) => `
+          <tr data-id="${escapeHtml(category.id)}">
+            <td>
+              <div style="font-weight:600;">${escapeHtml(category.name)}</div>
+              <div style="font-size:0.8125rem;color:var(--text-muted);">/${escapeHtml(category.slug)}</div>
+            </td>
+            <td>${escapeHtml(category.description || '')}</td>
+            <td>${escapeHtml(String(category.sort_order))}</td>
+            <td>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" type="button" onclick="editCategory('${escapeHtml(category.id)}')">Edit</button>
+                <button class="btn btn-ghost" type="button" onclick="deleteCategory('${escapeHtml(category.id)}', this)" style="color:#cc0000;border-color:#cc0000;">Delete</button>
+              </div>
+            </td>
+          </tr>`,
+      )
+      .join('')
+    : `<tr><td colspan="4"><div class="empty-state">No categories yet.</div></td></tr>`;
+
+  const categoryJson = escapeJsonForHtml(categories);
+
+  return appShellPage(user, {
+    activeNav: 'categories',
+    pageTitle: 'Categories | Samoon Digital Admin',
+    eyebrow: 'Taxonomy',
+    title: 'Categories',
+    subtitle: 'News/blog categories manage, edit, order aur delete karein.',
+    toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
+    content: `
+      <div class="stack">
+        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
+        <div class="cols-aside">
+          <div class="card">
+            <div class="card-header"><h2>Manage Categories</h2></div>
+            <div style="overflow-x:auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Description</th>
+                    <th>Order</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2 id="category-form-title">Add Category</h2></div>
+            <div class="card-body">
+              <form class="form" id="category-form">
+                <input id="category-id" type="hidden" />
+                <div class="field">
+                  <label for="category-name">Name</label>
+                  <input id="category-name" required placeholder="News" />
+                </div>
+                <div class="field">
+                  <label for="category-description">Description</label>
+                  <textarea id="category-description" placeholder="Short editorial focus for this category"></textarea>
+                </div>
+                <div class="field">
+                  <label for="category-order">Sort Order</label>
+                  <input id="category-order" type="number" value="100" min="0" />
+                </div>
+                <button class="btn btn-primary btn-full" id="category-submit" type="submit">Save Category</button>
+                <button class="btn btn-secondary btn-full" id="category-cancel" type="button" style="display:none;">Cancel Edit</button>
+                <div class="notice" id="category-notice"></div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        const categories = ${categoryJson};
+        const form = document.getElementById('category-form');
+        const notice = document.getElementById('category-notice');
+        const cancelBtn = document.getElementById('category-cancel');
+
+        function resetForm() {
+          document.getElementById('category-id').value = '';
+          document.getElementById('category-name').value = '';
+          document.getElementById('category-description').value = '';
+          document.getElementById('category-order').value = '100';
+          document.getElementById('category-form-title').textContent = 'Add Category';
+          cancelBtn.style.display = 'none';
+          notice.textContent = '';
+          notice.className = 'notice';
+        }
+
+        function editCategory(id) {
+          const category = categories.find((item) => item.id === id);
+          if (!category) return;
+          document.getElementById('category-id').value = category.id;
+          document.getElementById('category-name').value = category.name;
+          document.getElementById('category-description').value = category.description || '';
+          document.getElementById('category-order').value = category.sort_order || 100;
+          document.getElementById('category-form-title').textContent = 'Edit Category';
+          cancelBtn.style.display = '';
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        cancelBtn.addEventListener('click', resetForm);
+
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const id = document.getElementById('category-id').value;
+          const payload = {
+            name: document.getElementById('category-name').value,
+            description: document.getElementById('category-description').value,
+            sort_order: Number(document.getElementById('category-order').value) || 100,
+          };
+          try {
+            const res = await fetch(id ? '/api/categories/' + id : '/api/categories', {
+              method: id ? 'PATCH' : 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Category save failed');
+            window.location.href = '/categories?saved=1';
+          } catch (err) {
+            notice.textContent = err.message || 'Category save failed';
+            notice.className = 'notice error';
+          }
+        });
+
+        async function deleteCategory(id, btn) {
+          if (!confirm('Is category ko delete karein? Existing articles ka text category field unchanged rahega.')) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/categories/' + id, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Delete failed');
+            window.location.href = '/categories?deleted=1';
+          } catch (err) {
+            alert(err.message || 'Delete failed');
+            btn.disabled = false;
+          }
+        }
+      </script>
+    `,
+  });
+}
+
 function placeholderPage(
   user: SessionUser,
-  activeNav: 'categories' | 'seo',
+  activeNav: 'seo',
   title: string,
   description: string,
 ) {
   return appShellPage(user, {
     activeNav,
     pageTitle: `${title} | Samoon Digital Admin`,
-    eyebrow: activeNav === 'categories' ? 'Taxonomy' : 'Search Optimization',
+    eyebrow: 'Search Optimization',
     title,
     subtitle: description,
     toolbar: `<a class="btn btn-secondary" href="/articles/new">New Article</a>`,
@@ -1319,248 +1543,6 @@ function placeholderPage(
           Ye section next layer ke liye ready hai. Article workflow ab functional hai, isliye categories aur SEO presets ko isi base par add kiya ja sakta hai.
         </div>
       </div></div>
-    `,
-  });
-}
-
-function websitesPage(user: SessionUser, sites: MonitoredWebsite[], message = '') {
-  const siteRows = sites.length
-    ? sites
-      .map(
-        (s) => `
-      <tr>
-        <td>
-          <div style="font-weight:500;margin-bottom:2px;">${escapeHtml(s.label)}</div>
-          <div style="font-size:0.8125rem;color:var(--text-muted);word-break:break-all;">${escapeHtml(s.url)}</div>
-        </td>
-        <td><span class="badge badge-info">${escapeHtml(s.category)}</span></td>
-        <td>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <input class="freq-input" data-id="${s.id}" type="number" value="${s.scan_frequency_hours}" min="1" max="168" style="width:64px;padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:0.875rem;" />
-            <span style="font-size:0.8125rem;color:var(--text-muted)">hrs</span>
-            <button class="btn btn-ghost" onclick="updateFrequency('${s.id}',this)" style="padding:4px 10px;font-size:0.8125rem;">Save</button>
-          </div>
-        </td>
-        <td style="font-size:0.8125rem;">
-          <div style="color:var(--text-muted)">${s.last_scanned_at ? escapeHtml(formatDateLabel(s.last_scanned_at)) : 'Never scanned'}</div>
-          ${s.last_topic_found ? `<div style="color:var(--text);margin-top:2px;">${escapeHtml(s.last_topic_found)}</div>` : ''}
-        </td>
-        <td>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="btn btn-primary" onclick="scanNow('${s.id}',this)" style="padding:5px 12px;font-size:0.8125rem;">Scan Now</button>
-            <button class="btn btn-ghost" onclick="deleteSite('${s.id}',this)" style="padding:5px 12px;font-size:0.8125rem;color:#cc0000;border-color:#cc0000;">Delete</button>
-          </div>
-        </td>
-      </tr>`,
-      )
-      .join('')
-    : `<tr><td colspan="5"><div class="empty-state">Koi website add nahi ki gayi. Right panel se add karein.</div></td></tr>`;
-
-  return appShellPage(user, {
-    activeNav: 'websites',
-    pageTitle: 'Website Monitor — Samoon Digital',
-    eyebrow: 'Automation',
-    title: 'Website Monitor',
-    subtitle: 'AI websites scan karega, nayi content/jobs/notifications dhundhega aur evergreen blog likhega',
-    toolbar: '',
-    content: `
-      <div id="page-notice" class="notice ok" style="${message ? '' : 'display:none;'}">${escapeHtml(message)}</div>
-      <div class="progress-panel" id="scan-progress" hidden>
-        <div class="progress-top"><strong id="scan-progress-label">Preparing</strong><span id="scan-progress-percent">0%</span></div>
-        <div class="progress-track"><div class="progress-bar" id="scan-progress-bar"></div></div>
-        <div class="progress-steps" id="scan-progress-steps"></div>
-      </div>
-      <div class="cols-aside">
-        <div class="card">
-          <div class="card-header">
-            <h2>Monitored Websites (${sites.length})</h2>
-          </div>
-          <div style="overflow-x:auto;">
-            <table>
-              <thead>
-                <tr>
-                  <th>Website</th>
-                  <th>Category</th>
-                  <th>Scan Frequency</th>
-                  <th>Last Scan &amp; Topic</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="sites-tbody">${siteRows}</tbody>
-            </table>
-          </div>
-        </div>
-        <div class="stack">
-          <div class="card">
-            <div class="card-header"><h2>Add Website</h2></div>
-            <div class="card-body">
-              <form class="form" id="add-site-form">
-                <div class="field">
-                  <label for="site-label">Label</label>
-                  <input id="site-label" placeholder="e.g. Indian Railways Recruitment" required />
-                </div>
-                <div class="field">
-                  <label for="site-url">URL</label>
-                  <input id="site-url" type="url" placeholder="https://indianrailways.gov.in" required />
-                </div>
-                <div class="field">
-                  <label for="site-category">Category</label>
-                  <select id="site-category">
-                    <option value="Government">Government</option>
-                    <option value="Railway">Railway</option>
-                    <option value="News">News</option>
-                    <option value="Education">Education</option>
-                    <option value="Finance">Finance</option>
-                    <option value="Technology">Technology</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label for="site-freq">Scan Every (hours)</label>
-                  <input id="site-freq" type="number" value="24" min="1" max="168" />
-                </div>
-                <button class="btn btn-primary btn-full" type="submit">Add Website</button>
-                <div class="notice" id="add-notice"></div>
-              </form>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-header"><h2>How it works</h2></div>
-            <div class="card-body">
-              <div class="item-list">
-                <div class="item-row"><div><div class="title">1. Website add karein</div><div class="meta">URL, category aur scan frequency set karein</div></div></div>
-                <div class="item-row"><div><div class="title">2. Scan Now click karein</div><div class="meta">AI page visit karega, new content dhundhega</div></div></div>
-                <div class="item-row"><div><div class="title">3. Blog auto-generate</div><div class="meta">GPT-5.5 evergreen blog likhega, GPT Image featured image banayega</div></div></div>
-                <div class="item-row"><div><div class="title">4. Review &amp; Publish</div><div class="meta">Draft me save hoga, Articles se publish karein</div></div></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <script>
-        document.getElementById('add-site-form').addEventListener('submit', async (e) => {
-          e.preventDefault();
-          const btn = e.target.querySelector('[type=submit]');
-          const notice = document.getElementById('add-notice');
-          btn.disabled = true;
-          btn.textContent = 'Adding...';
-          notice.className = 'notice';
-          notice.textContent = '';
-          try {
-            const res = await fetch('/api/websites', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                label: document.getElementById('site-label').value,
-                url: document.getElementById('site-url').value,
-                category: document.getElementById('site-category').value,
-                scan_frequency_hours: Number(document.getElementById('site-freq').value) || 24,
-              }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.message || 'Failed to add');
-            window.location.reload();
-          } catch (err) {
-            notice.textContent = err.message;
-            notice.className = 'notice error';
-            btn.disabled = false;
-            btn.textContent = 'Add Website';
-          }
-        });
-
-        async function deleteSite(id, btn) {
-          if (!confirm('Is website ko monitor karna band karein?')) return;
-          btn.disabled = true;
-          try {
-            const res = await fetch('/api/websites/' + id, { method: 'DELETE' });
-            if (!res.ok) { const d = await res.json(); throw new Error(d.message || 'Delete failed'); }
-            btn.closest('tr').remove();
-          } catch (err) { alert(err.message); btn.disabled = false; }
-        }
-
-        async function updateFrequency(id, btn) {
-          const input = document.querySelector('.freq-input[data-id="' + id + '"]');
-          btn.disabled = true;
-          try {
-            const res = await fetch('/api/websites/' + id, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ scan_frequency_hours: Number(input.value) || 24 }),
-            });
-            if (!res.ok) { const d = await res.json(); throw new Error(d.message || 'Update failed'); }
-            btn.textContent = 'Saved!';
-            setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500);
-          } catch (err) { alert(err.message); btn.disabled = false; }
-        }
-
-        const scanProgress = document.getElementById('scan-progress');
-        const scanProgressLabel = document.getElementById('scan-progress-label');
-        const scanProgressPercent = document.getElementById('scan-progress-percent');
-        const scanProgressBar = document.getElementById('scan-progress-bar');
-        const scanProgressSteps = document.getElementById('scan-progress-steps');
-        const scanSteps = [
-          'Website content fetching',
-          'Best blog topic identifying',
-          'SEO article writing',
-          'WebP featured image generating',
-          'R2 upload and draft save'
-        ];
-        let scanProgressTimer;
-
-        function setScanProgress(index, percent) {
-          scanProgress.hidden = false;
-          scanProgressLabel.textContent = scanSteps[index] || 'Finishing';
-          scanProgressPercent.textContent = Math.round(percent) + '%';
-          scanProgressBar.style.width = Math.max(8, Math.min(100, percent)) + '%';
-          scanProgressSteps.innerHTML = scanSteps.map((step, i) => {
-            const state = i < index ? 'done' : i === index ? 'active' : '';
-            return '<div class="progress-step ' + state + '"><span class="progress-dot"></span><span>' + step + '</span></div>';
-          }).join('');
-        }
-
-        function startScanProgress() {
-          let index = 0;
-          let percent = 8;
-          setScanProgress(index, percent);
-          clearInterval(scanProgressTimer);
-          scanProgressTimer = setInterval(() => {
-            percent = Math.min(92, percent + 6);
-            index = Math.min(scanSteps.length - 1, Math.floor((percent / 100) * scanSteps.length));
-            setScanProgress(index, percent);
-          }, 5000);
-        }
-
-        function finishScanProgress() {
-          clearInterval(scanProgressTimer);
-          setScanProgress(scanSteps.length - 1, 100);
-        }
-
-        async function scanNow(id, btn) {
-          const origText = btn.textContent;
-          btn.disabled = true;
-          btn.textContent = 'Scanning...';
-          const notice = document.getElementById('page-notice');
-          notice.style.display = 'none';
-          startScanProgress();
-          try {
-            const res = await fetch('/api/websites/' + id + '/scan', { method: 'POST' });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.message || 'Scan failed');
-            finishScanProgress();
-            notice.textContent = data.message || 'Blog generated!';
-            notice.className = 'notice ok';
-            notice.style.display = '';
-            btn.textContent = 'Done!';
-            setTimeout(() => window.location.reload(), 2500);
-          } catch (err) {
-            clearInterval(scanProgressTimer);
-            notice.textContent = err.message;
-            notice.className = 'notice error';
-            notice.style.display = '';
-            btn.disabled = false;
-            btn.textContent = origText;
-          }
-        }
-      </script>
     `,
   });
 }
@@ -1614,7 +1596,8 @@ app.get('/articles/new', async (c) => {
     return c.redirect('/');
   }
 
-  return c.html(aiGenerationPage(session));
+  const categories = await readCategories(c.env.ADMIN_DB);
+  return c.html(aiGenerationPage(session, categories));
 });
 
 app.get('/articles/:id/preview', async (c) => {
@@ -1647,14 +1630,14 @@ app.get('/categories', async (c) => {
     return c.redirect('/');
   }
 
-  return c.html(
-    placeholderPage(
-      session,
-      'categories',
-      'Categories',
-      'Article system live hone ke baad taxonomy management sabse natural next layer hai.',
-    ),
-  );
+  const categories = await readCategories(c.env.ADMIN_DB);
+  const url = new URL(c.req.url);
+  const message = url.searchParams.get('saved')
+    ? 'Category save ho gayi.'
+    : url.searchParams.get('deleted')
+      ? 'Category delete ho gayi.'
+      : '';
+  return c.html(categoriesPage(session, categories, message));
 });
 
 app.get('/seo', async (c) => {
@@ -1672,15 +1655,6 @@ app.get('/seo', async (c) => {
       'Search metadata aur template presets ko article schema ke upar seedha mount kiya ja sakta hai.',
     ),
   );
-});
-
-app.get('/websites', async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.redirect('/');
-  const sites = await queryAll<MonitoredWebsite>(
-    c.env.ADMIN_DB.prepare('SELECT * FROM monitored_websites ORDER BY datetime(created_at) DESC'),
-  );
-  return c.html(websitesPage(session, sites));
 });
 
 app.get('/api/me', async (c) => {
@@ -1716,6 +1690,69 @@ app.patch('/api/articles/:id/status', async (c) => {
     .run();
 
   return c.json({ ok: true, status });
+});
+
+app.post('/api/categories', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const body = await c.req.json<{ name?: string; description?: string; sort_order?: number }>();
+  const name = normalizeText(body.name);
+  const description = normalizeText(body.description);
+  const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
+  const slug = slugify(name);
+
+  if (!name || !slug) {
+    return c.json({ ok: false, message: 'Category name required hai' }, 400);
+  }
+
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare('INSERT INTO categories (id, name, slug, description, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), name, slug, description || null, sortOrder, now, now)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.patch('/api/categories/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{ name?: string; description?: string; sort_order?: number }>();
+  const name = normalizeText(body.name);
+  const description = normalizeText(body.description);
+  const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
+  const slug = slugify(name);
+
+  if (!name || !slug) {
+    return c.json({ ok: false, message: 'Category name required hai' }, 400);
+  }
+
+  await c.env.ADMIN_DB
+    .prepare('UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ?, updated_at = ? WHERE id = ?')
+    .bind(name, slug, description || null, sortOrder, new Date().toISOString(), id)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete('/api/categories/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  await c.env.ADMIN_DB.prepare('DELETE FROM categories WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ ok: true });
 });
 
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
@@ -1789,13 +1826,21 @@ app.post('/api/articles/generate', async (c) => {
     });
     const openaiClient = getOpenAIClient();
 
-    const body = await c.req.json<{ title?: string; category?: string }>();
-    const title = normalizeText(body.title);
-    const category = normalizeText(body.category) || 'Default';
+    const body = await c.req.json<{ title?: string; category?: string; sourceUrl?: string }>();
+    const manualTitle = normalizeText(body.title);
+    const requestedCategory = normalizeText(body.category) || 'News';
+    const sourceUrl = normalizeText(body.sourceUrl);
+    const source = sourceUrl ? await fetchReadablePageText(sourceUrl) : null;
 
-    if (!title) {
-      return c.json({ ok: false, message: 'Blog title is required' }, 400);
+    if (!source && !manualTitle) {
+      return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
     }
+
+    const sourceBrief = source
+      ? await openaiClient.createArticleBriefFromSource(source, requestedCategory)
+      : null;
+    const title = normalizeText(sourceBrief?.blog_title) || manualTitle;
+    const category = normalizeText(sourceBrief?.category) || requestedCategory;
 
     const articleId = crypto.randomUUID();
     const slug = buildSlug(title, articleId);
@@ -1812,7 +1857,7 @@ app.post('/api/articles/generate', async (c) => {
     }
 
     const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
-    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
+    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title, source || undefined);
     const content = normalizeArticleContent(blogContent.content);
     if (!content) {
       throw new Error('OpenAI blog response produced an empty article body');
@@ -1827,7 +1872,7 @@ app.post('/api/articles/generate', async (c) => {
 
     await c.env.ADMIN_DB
       .prepare(
-        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, source_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .bind(
         articleId,
@@ -1843,6 +1888,7 @@ app.post('/api/articles/generate', async (c) => {
         uploadedImage.objectKey,
         canonicalUrl,
         schemaMarkup,
+        source?.url || null,
         'draft',
         session.id,
         now,
@@ -1865,173 +1911,7 @@ app.post('/api/articles/generate', async (c) => {
 });
 
 
-app.post('/api/websites', async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
 
-  const body = await c.req.json<{ label?: string; url?: string; category?: string; scan_frequency_hours?: number }>();
-  const label = normalizeText(body.label);
-  const url = normalizeText(body.url);
-  const category = normalizeText(body.category) || 'News';
-  const freq = Math.max(1, Math.min(168, Number(body.scan_frequency_hours) || 24));
-
-  if (!label || !url) return c.json({ ok: false, message: 'Label aur URL dono required hain' }, 400);
-
-  try { new URL(url); } catch { return c.json({ ok: false, message: 'Invalid URL format' }, 400); }
-
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  await c.env.ADMIN_DB
-    .prepare('INSERT INTO monitored_websites (id, label, url, category, scan_frequency_hours, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(id, label, url, category, freq, now)
-    .run();
-
-  return c.json({ ok: true, id, label, url });
-});
-
-app.delete('/api/websites/:id', async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
-
-  const id = c.req.param('id');
-  await c.env.ADMIN_DB.prepare('DELETE FROM monitored_websites WHERE id = ?').bind(id).run();
-  return c.json({ ok: true });
-});
-
-app.patch('/api/websites/:id', async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
-
-  const id = c.req.param('id');
-  const body = await c.req.json<{ scan_frequency_hours?: number }>();
-  const freq = Math.max(1, Math.min(168, Number(body.scan_frequency_hours) || 24));
-  await c.env.ADMIN_DB
-    .prepare('UPDATE monitored_websites SET scan_frequency_hours = ? WHERE id = ?')
-    .bind(freq, id)
-    .run();
-  return c.json({ ok: true });
-});
-
-app.post('/api/websites/:id/scan', async (c) => {
-  const session = await requireSession(c);
-  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
-
-  const siteId = c.req.param('id');
-  const site = await c.env.ADMIN_DB
-    .prepare('SELECT * FROM monitored_websites WHERE id = ?')
-    .bind(siteId)
-    .first<MonitoredWebsite>();
-  if (!site) return c.json({ ok: false, message: 'Website not found' }, 404);
-
-  try {
-    const openaiKey = c.env.OPENAI_API_KEY;
-    if (!openaiKey) return c.json({ ok: false, message: 'OpenAI API key configured nahi hai' }, 500);
-    initOpenAIClient({
-      apiKey: openaiKey,
-      trackingId: c.env.OPENAI_TRACKING_ID,
-      textModel: c.env.OPENAI_TEXT_MODEL,
-      imageModel: c.env.OPENAI_IMAGE_MODEL,
-    });
-    const openaiClient = getOpenAIClient();
-
-    // 1. Fetch website content
-    let pageText = '';
-    try {
-      const pageRes = await fetch(site.url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SamoonDigital-Bot/1.0)' },
-      });
-      const html = await pageRes.text();
-      pageText = html
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    } catch (fetchErr) {
-      const msg = fetchErr instanceof Error ? fetchErr.message : 'Network error';
-      return c.json({ ok: false, message: `Website fetch failed: ${msg}` }, 400);
-    }
-
-    if (pageText.length < 100) {
-      return c.json({ ok: false, message: 'Website ne kafi content return nahi kiya' }, 400);
-    }
-
-    // 2. AI finds the best blog topic from the page
-    const topicResult = await openaiClient.findBlogTopic(pageText, site.category);
-    const title = normalizeText(topicResult.blog_title);
-    const category = normalizeText(topicResult.category) || site.category;
-
-    if (!title) return c.json({ ok: false, message: 'AI koi suitable blog topic identify nahi kar saka' }, 400);
-
-    // 3. Check duplicate slug/title
-    const articleId = crypto.randomUUID();
-    const slug = buildSlug(title, articleId);
-    const existing = await c.env.ADMIN_DB
-      .prepare('SELECT id FROM articles WHERE slug = ? OR lower(title) = lower(?) LIMIT 1')
-      .bind(slug, title)
-      .first<{ id: string }>();
-    if (existing) return c.json({ ok: false, message: `"${title}" topic par blog already exist karta hai` }, 409);
-
-    // 4. Generate full blog content + featured image
-    const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title);
-    const blogContent = await openaiClient.generateBlogContent(seoPrompt, title);
-    const content = normalizeArticleContent(blogContent.content);
-    if (!content) {
-      throw new Error('OpenAI blog response produced an empty article body');
-    }
-    const image = await openaiClient.generateFeaturedImage(
-      blogContent.featured_image_prompt,
-      title,
-      blogContent.featured_image_alt,
-    );
-    const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
-    const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
-
-    // 5. Save article as draft
-    const now = new Date().toISOString();
-    const canonicalUrl = publicArticleUrl(slug);
-    await c.env.ADMIN_DB
-      .prepare('INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(
-        articleId,
-        title,
-        slug,
-        makeExcerpt(content, blogContent.meta_description || title),
-        content,
-        category,
-        blogContent.seo_title,
-        blogContent.meta_description,
-        uploadedImage.publicUrl,
-        image.altText,
-        uploadedImage.objectKey,
-        canonicalUrl,
-        schemaMarkup,
-        'draft',
-        session.id,
-        now,
-        now,
-      )
-      .run();
-
-    await recordMediaAsset(c.env.ADMIN_DB, articleId, uploadedImage.objectKey, uploadedImage.publicUrl, image);
-
-    // 6. Update website scan record
-    await c.env.ADMIN_DB
-      .prepare('UPDATE monitored_websites SET last_scanned_at = ?, last_topic_found = ? WHERE id = ?')
-      .bind(now, title, siteId)
-      .run();
-
-    return c.json({
-      ok: true,
-      message: `Blog generate ho gaya: "${title}" — Draft me save hua`,
-      article: { id: articleId, title, slug },
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Website scan error:', msg);
-    return c.json({ ok: false, message: `Scan failed: ${msg}` }, 500);
-  }
-});
 
 app.post('/api/logout', (c) => {
   deleteCookie(c, SESSION_COOKIE, {

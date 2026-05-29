@@ -40,7 +40,12 @@ export async function buildSeoPrompt(
     const systemPrompt = `
 # Blog Content Generation with SEO Optimization
 
-You are an expert SEO-optimized blog writer specializing in Hindi/Hinglish content.
+You are an expert Hindi/Hinglish news editor and SEO blog writer for an India-focused website.
+
+Editorial focus:
+- Prefer news-style explainers: what happened, why it matters, who is affected, key facts, timeline, next steps.
+- Keep the tone clear, useful, trustworthy and engaging without clickbait.
+- When the topic is not breaking news, write it as a practical blog guide with a current-news angle where natural.
 
 ## Blog Title
 "${blogTitle}"
@@ -151,9 +156,9 @@ Generate featured image metadata:
 ${config.image_guidance || 'Large images with emotional appeal'}
 
 Guidelines:
-- Filename: Descriptive, lowercase, hyphens (e.g., waiting-list-kya-hai.webp)
-- Format: WebP
-- Size: 1200x800px minimum
+- Filename: Descriptive, lowercase, hyphens (e.g., waiting-list-kya-hai.avif)
+- Format: AVIF delivery
+- Size: Google Discover-friendly large image, at least 1200px wide, 16:9 crop-safe composition
 - ALT text: Include primary keyword, descriptive (50-125 chars)
 
 ---

@@ -1,6 +1,6 @@
 /**
  * OpenAI Integration
- * Handles blog generation with GPT-5.5 and image generation with GPT Image.
+ * Handles Hindi news/blog generation with GPT-5.5 and featured image generation.
  */
 
 const DEFAULT_TEXT_MODEL = 'gpt-5.5';
@@ -35,6 +35,12 @@ export interface BlogTopicResult {
     blog_title: string;
     category: string;
     reason: string;
+}
+
+export interface SourceArticleContext {
+    url: string;
+    title?: string;
+    text: string;
 }
 
 class OpenAIClient {
@@ -165,10 +171,14 @@ class OpenAIClient {
     async generateBlogContent(
         systemPrompt: string,
         title: string,
+        source?: SourceArticleContext,
     ): Promise<GeneratedBlogContent> {
+        const sourceInstructions = source
+            ? `\n\nUse this source URL as the reporting source: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content excerpt:\n${source.text.substring(0, 9000)}\n\nWrite a fresh Hindi/Hinglish news-style article for Laxy.in. Do not copy sentences. Summarize, explain context, and make it useful for Indian readers. Mention the source only when naturally useful.`
+            : '';
         const content = await this.createJsonResponse(
             systemPrompt,
-            `Generate an SEO-optimized blog post with all required metadata and schema markup. Blog title: "${title}"`,
+            `Generate an SEO-optimized news/blog post with all required metadata and schema markup. Blog title: "${title}"${sourceInstructions}`,
             9000,
         );
         const parsed = this.parseJson<GeneratedBlogContent>(content, 'OpenAI blog content');
@@ -189,6 +199,19 @@ class OpenAIClient {
         };
     }
 
+    async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string): Promise<BlogTopicResult> {
+        const content = await this.createJsonResponse(
+            'You are an Indian news editor for Laxy.in. Read the source content and create the best Hindi/Hinglish article brief for our website. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
+            `Category hint: ${categoryHint || 'News'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
+            1200,
+        );
+        const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI source article brief');
+        if (!parsed.blog_title) {
+            throw new Error('OpenAI source brief missed blog_title');
+        }
+        return parsed;
+    }
+
     async generateFeaturedImage(prompt: string, title: string, altText?: string): Promise<GeneratedImage> {
         const imagePrompt = `
 Create a professional, engaging featured image for a blog post titled: "${title}"
@@ -203,6 +226,7 @@ Requirements:
 - No text overlays on image
 - 16:9 aspect ratio (ideal for web)
 - Clean editorial composition with one clear subject, low visual noise, sharp edges, and uncluttered background
+- Google Discover-friendly large image composition, safe at 1200px+ wide and strong on mobile crops
 `;
 
         const response = await fetch(`${this.baseUrl}/images/generations`, {
@@ -254,18 +278,6 @@ Requirements:
         throw new Error('No image generated from GPT Image');
     }
 
-    async findBlogTopic(pageText: string, categoryHint: string): Promise<BlogTopicResult> {
-        const content = await this.createJsonResponse(
-            'You are an expert Indian content strategist. Analyze the given webpage text and identify the single most important, timely topic for an evergreen blog post targeting Indian readers. Focus on: job vacancies, government notifications, sarkari aadesh, government schemes, exam notifications, or major India news events. Return JSON with keys: blog_title (compelling Hindi or English headline), category (one of: Government, Railway, Education, Finance, Technology, News), reason (1 sentence why this topic is valuable).',
-            `Category hint: ${categoryHint}\n\nWebpage content:\n${pageText.substring(0, 6000)}`,
-            1200,
-        );
-        const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI blog topic');
-        if (!parsed.blog_title) {
-            throw new Error('OpenAI topic response missed blog_title');
-        }
-        return parsed;
-    }
 }
 
 function base64ToBytes(base64: string) {
