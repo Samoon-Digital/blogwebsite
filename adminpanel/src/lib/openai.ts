@@ -207,10 +207,10 @@ class OpenAIClient {
         };
     }
 
-    async createHeadlineFromTitle(rawTitle: string, categoryHint: string): Promise<BlogTopicResult> {
+    async createHeadlineFromTitle(rawTitle: string, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
             'You are an Indian Hindi/Hinglish news editor for Laxy.in. Rewrite rough user-provided topics into short, catchy, SEO-safe Hindi headlines. Do not copy the raw title as-is. Keep it factual, no clickbait, no extra punctuation spam. Return JSON with keys: blog_title, category, reason.',
-            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article.`,
+            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nSaved category style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article.`,
             900,
         );
         const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI headline brief');
@@ -220,10 +220,10 @@ class OpenAIClient {
         return parsed;
     }
 
-    async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string): Promise<BlogTopicResult> {
+    async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
             'You are an Indian news editor for Laxy.in. Read the source content and create the best Hindi/Hinglish article brief for our website. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
-            `Category hint: ${categoryHint || 'News'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
+            `Category hint: ${categoryHint || 'News'}\nSaved category style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
             1200,
         );
         const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI source article brief');

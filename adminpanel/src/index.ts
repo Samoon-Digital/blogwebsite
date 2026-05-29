@@ -47,6 +47,7 @@ type ArticleRow = {
   status: string;
   author_id: string;
   author_name?: string | null;
+  author_slug?: string | null;
   author_bio?: string | null;
   author_image_url?: string | null;
   created_at: string;
@@ -69,6 +70,7 @@ type PublicArticleRow = {
   schema_markup: string | null;
   author_id?: string | null;
   author_name?: string | null;
+  author_slug?: string | null;
   author_bio?: string | null;
   author_image_url?: string | null;
   created_at: string;
@@ -201,6 +203,14 @@ function publicArticleUrl(slug: string) {
   return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
 }
 
+function publicCategoryUrl(slug: string) {
+  return `${PUBLIC_SITE_ORIGIN}/category/${encodeURIComponent(slug)}`;
+}
+
+function publicAuthorUrl(slug: string) {
+  return `${PUBLIC_SITE_ORIGIN}/author/${encodeURIComponent(slug)}`;
+}
+
 function publicAssetUrl(c: Context<{ Bindings: Bindings }>, key: string) {
   const configuredBase = normalizeText(c.env.R2_PUBLIC_BASE_URL).replace(/\/+$/g, '');
   const baseUrl = configuredBase || `${PUBLIC_SITE_ORIGIN}/assets`;
@@ -271,6 +281,24 @@ function stripHtml(value: string) {
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function extractMetaContent(html: string, name: string) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const propertyMatch = html.match(new RegExp(`<meta[^>]+property=["']${escapedName}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'));
+  if (propertyMatch?.[1]) {
+    return stripHtml(propertyMatch[1]);
+  }
+  const nameMatch = html.match(new RegExp(`<meta[^>]+name=["']${escapedName}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'));
+  return nameMatch?.[1] ? stripHtml(nameMatch[1]) : '';
+}
+
+function resolveSourceUrl(baseUrl: string, maybeUrl: string) {
+  try {
+    return new URL(maybeUrl, baseUrl).toString();
+  } catch {
+    return '';
+  }
 }
 
 function makeExcerpt(content: string, fallback: string) {
@@ -380,6 +408,12 @@ async function fetchReadablePageText(sourceUrl: string) {
   const html = await response.text();
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const pageTitle = titleMatch ? stripHtml(titleMatch[1]) : '';
+  const metaDescription = extractMetaContent(html, 'description') || extractMetaContent(html, 'og:description');
+  const imageUrl = resolveSourceUrl(parsedUrl.toString(), extractMetaContent(html, 'og:image') || extractMetaContent(html, 'twitter:image'));
+  const headings = Array.from(html.matchAll(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi))
+    .map((match) => stripHtml(match[1]))
+    .filter(Boolean)
+    .slice(0, 12);
   const text = stripHtml(html);
 
   if (text.length < 200) {
@@ -389,6 +423,9 @@ async function fetchReadablePageText(sourceUrl: string) {
   return {
     url: parsedUrl.toString(),
     title: pageTitle,
+    metaDescription,
+    imageUrl,
+    headings,
     text: text.slice(0, 12000),
   };
 }
@@ -734,7 +771,7 @@ async function readArticles(
   const articles = await queryAll<ArticleRow>(
     db
       .prepare(
-        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
          FROM articles
          LEFT JOIN authors ON authors.id = articles.author_id
          ${whereSql}
@@ -750,7 +787,7 @@ async function readArticles(
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
     ),
   );
 }
@@ -758,16 +795,50 @@ async function readPublishedArticles(db: D1Database) {
 async function readPublishedArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.slug = ? AND articles.status = 'published' LIMIT 1",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.slug = ? AND articles.status = 'published' LIMIT 1",
     )
     .bind(slug)
     .first<PublicArticleRow>();
 }
 
+async function readCategoryBySlug(db: D1Database, slug: string) {
+  return db
+    .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE slug = ? LIMIT 1')
+    .bind(slug)
+    .first<CategoryRow>();
+}
+
+async function readPublishedArticlesByCategory(db: D1Database, categoryName: string) {
+  return queryAll<PublicArticleRow>(
+    db
+      .prepare(
+        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+      )
+      .bind(categoryName),
+  );
+}
+
+async function readAuthorBySlug(db: D1Database, slug: string) {
+  return db
+    .prepare('SELECT id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at FROM authors WHERE slug = ? LIMIT 1')
+    .bind(slug)
+    .first<AuthorRow>();
+}
+
+async function readPublishedArticlesByAuthor(db: D1Database, authorId: string) {
+  return queryAll<PublicArticleRow>(
+    db
+      .prepare(
+        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.author_id = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+      )
+      .bind(authorId),
+  );
+}
+
 async function readArticleById(db: D1Database, id: string) {
   return db
     .prepare(
-      'SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.id = ? LIMIT 1',
+      'SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.id = ? LIMIT 1',
     )
     .bind(id)
     .first<ArticleRow>();
@@ -827,12 +898,6 @@ async function readRelatedArticlesForPrompt(db: D1Database, category: string, cu
         "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) AND (category = ? OR ? = '') ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 6",
       )
       .bind(currentTitle, category, category),
-  );
-}
-
-async function readSeoConfigs(db: D1Database) {
-  return queryAll<SEOConfigRow>(
-    db.prepare('SELECT category, canonical_tags, schema_types, keyword_focus, title_template, h_structure, readability_rules, image_guidance FROM seo_config ORDER BY category ASC'),
   );
 }
 
@@ -1026,6 +1091,9 @@ function publicStyles() {
     .nav { min-height: 58px; padding: 12px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .brand { font-weight: 800; font-size: 1.05rem; letter-spacing: 0; }
     .nav-links { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 0.9rem; }
+    .category-strip { display: flex; gap: 8px; flex-wrap: wrap; }
+    .category-chip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 7px 11px; font-size: 0.86rem; color: var(--muted); background: #fff; }
+    .category-chip:hover { color: var(--text); border-color: var(--accent); }
     .hero { padding: 34px 0 24px; background: var(--soft); border-bottom: 1px solid var(--border); }
     .hero h1 { font-size: clamp(2rem, 2rem + 1.8vw, 4rem); line-height: 1.04; letter-spacing: 0; max-width: 780px; }
     .hero p { margin-top: 12px; color: var(--muted); line-height: 1.7; max-width: 640px; font-size: 1rem; }
@@ -1037,6 +1105,7 @@ function publicStyles() {
     .post-card h2 { font-size: 1rem; line-height: 1.35; letter-spacing: 0; }
     .post-card p { color: var(--muted); line-height: 1.6; font-size: 0.9rem; }
     .date { color: #5f6368; font-size: 0.82rem; }
+    .byline a { color: var(--accent); font-weight: 600; }
     .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
     .article { padding: 22px 0 52px; }
     .article-head { display: grid; gap: 12px; padding-bottom: 18px; }
@@ -1055,6 +1124,11 @@ function publicStyles() {
     .content table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
     .content td, .content th { border: 1px solid var(--border); padding: 9px; text-align: left; }
     .content a { color: var(--accent); text-decoration: underline; }
+    .profile { padding: 28px 0 52px; display: grid; gap: 20px; }
+    .profile-head { display: flex; gap: 16px; align-items: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+    .profile-head img { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--soft); }
+    .profile-head h1 { font-size: clamp(1.75rem, 1.5rem + 1vw, 2.6rem); line-height: 1.1; }
+    .profile-head p { color: var(--muted); line-height: 1.7; margin-top: 6px; max-width: 680px; }
     .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
     @media (min-width: 700px) { .wrap { width: min(1080px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, 1fr); gap: 16px; padding-top: 28px; } .post-card-body { padding: 16px; } .post-card h2 { font-size: 1.05rem; } .article { padding-top: 34px; } }
     @media (min-width: 980px) { .grid { grid-template-columns: repeat(3, 1fr); gap: 18px; } .hero { padding: 56px 0 34px; } .content { font-size: 1.03rem; } }
@@ -1063,6 +1137,7 @@ function publicStyles() {
 }
 
 function publicShell(title: string, description: string, content: string, headExtras = '') {
+  const baseSchemas = [organizationJsonLd(), websiteJsonLd()].map(jsonLdScript).join('\n  ');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1071,6 +1146,7 @@ function publicShell(title: string, description: string, content: string, headEx
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
   ${headExtras}
+  ${baseSchemas}
   <style>${publicStyles()}</style>
 </head>
 <body>
@@ -1127,14 +1203,37 @@ function organizationJsonLd() {
     '@type': 'Organization',
     name: 'Laxy.in',
     url: PUBLIC_SITE_ORIGIN,
+    logo: `${PUBLIC_SITE_ORIGIN}/favicon.ico`,
+  };
+}
+
+function websiteJsonLd() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: 'Laxy.in',
+    url: PUBLIC_SITE_ORIGIN,
+  };
+}
+
+function personJsonLd(author: Pick<AuthorRow, 'name' | 'slug' | 'bio' | 'image_url'>) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Person',
+    name: author.name,
+    url: publicAuthorUrl(author.slug),
+    description: author.bio || undefined,
+    image: author.image_url || undefined,
   };
 }
 
 function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
   const image = article.featured_image_url || undefined;
+  const isNews = /news|government|railway|education|vacancy|bharti|exam|result|admit/i.test(article.category || article.title);
+  const authorSlug = article.author_slug || slugify(article.author_name || 'samoon-digital') || 'samoon-digital';
   return {
     '@context': 'https://schema.org',
-    '@type': 'BlogPosting',
+    '@type': isNews ? 'NewsArticle' : 'BlogPosting',
     headline: article.seo_title || article.title,
     description: article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
     image,
@@ -1143,6 +1242,7 @@ function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: str
     author: {
       '@type': 'Person',
       name: article.author_name || 'Samoon Digital',
+      url: publicAuthorUrl(authorSlug),
     },
     publisher: organizationJsonLd(),
     mainEntityOfPage: {
@@ -1167,7 +1267,7 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
       '@type': 'ListItem',
       position: 2,
       name: article.category,
-      item: `${PUBLIC_SITE_ORIGIN}/?category=${encodeURIComponent(article.category)}`,
+      item: publicCategoryUrl(slugify(article.category) || encodeURIComponent(article.category)),
     });
   }
 
@@ -1195,7 +1295,14 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   const schemaObjects = [
     articleJsonLd(article, canonicalUrl),
     breadcrumbJsonLd(article, canonicalUrl),
-    organizationJsonLd(),
+    ...(article.author_name
+      ? [personJsonLd({
+        name: article.author_name,
+        slug: article.author_slug || slugify(article.author_name) || 'samoon-digital',
+        bio: article.author_bio || '',
+        image_url: article.author_image_url || '',
+      })]
+      : []),
     ...storedSchemaObjects(article.schema_markup),
   ];
 
@@ -1214,8 +1321,40 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   ${schemaObjects.map(jsonLdScript).join('\n  ')}`;
 }
 
-function publicHomePage(articles: PublicArticleRow[]) {
+function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
+  const categoryLinks = categories.length
+    ? `<section class="wrap" style="padding:16px 0 0;"><div class="category-strip">${categories
+      .map((category) => `<a class="category-chip" href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`)
+      .join('')}</div></section>`
+    : '';
   const cards = articles.length
+    ? `<section class="wrap grid">${articles
+      .map((article, index) => {
+        const image = article.featured_image_url
+          ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 979px) calc((100vw - 48px) / 2), 348px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
+          : '';
+        return `<a class="post-card" href="/${escapeHtml(article.slug)}">
+          ${image}
+          <div class="post-card-body">
+            <div class="kicker">${article.category ? `<span>${escapeHtml(article.category)}</span>` : 'Latest'}</div>
+            <h2>${escapeHtml(article.title)}</h2>
+            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Laxy.in.')}</p>
+            <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
+          </div>
+        </a>`;
+      })
+      .join('')}</section>`
+    : `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`;
+
+  return publicShell(
+    'Laxy.in - Latest Blogs and Updates',
+    'Laxy.in par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
+    `<section class="hero"><div class="wrap"><h1>Latest useful updates, explained simply.</h1><p>Jobs, government notifications, education, finance, technology aur daily-life guides ko Hinglish mein clear format mein padhein.</p></div></section>${categoryLinks}${cards}`,
+  );
+}
+
+function articleCardsList(articles: PublicArticleRow[]) {
+  return articles.length
     ? `<section class="wrap grid">${articles
       .map((article, index) => {
         const image = article.featured_image_url
@@ -1232,12 +1371,80 @@ function publicHomePage(articles: PublicArticleRow[]) {
         </a>`;
       })
       .join('')}</section>`
-    : `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`;
+    : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
+}
 
+function categoryPageJsonLd(category: CategoryRow, articles: PublicArticleRow[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: `${category.name} Articles`,
+    description: category.description || `${category.name} category ke latest articles aur updates.`,
+    url: publicCategoryUrl(category.slug),
+    mainEntity: {
+      '@type': 'ItemList',
+      itemListElement: articles.map((article, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: publicArticleUrl(article.slug),
+        name: article.title,
+      })),
+    },
+  };
+}
+
+function categoryBreadcrumbJsonLd(category: CategoryRow) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: PUBLIC_SITE_ORIGIN },
+      { '@type': 'ListItem', position: 2, name: category.name, item: publicCategoryUrl(category.slug) },
+    ],
+  };
+}
+
+function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[]) {
+  const title = `${category.name} Articles - Laxy.in`;
+  const description = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
   return publicShell(
-    'Laxy.in - Latest Blogs and Updates',
-    'Laxy.in par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
-    `<section class="hero"><div class="wrap"><h1>Latest useful updates, explained simply.</h1><p>Jobs, government notifications, education, finance, technology aur daily-life guides ko Hinglish mein clear format mein padhein.</p></div></section>${cards}`,
+    title,
+    description,
+    `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(category.name)}</span></nav><h1>${escapeHtml(category.name)}</h1><p>${escapeHtml(description)}</p></div></section>${articleCardsList(articles)}`,
+    `<link rel="canonical" href="${escapeHtml(publicCategoryUrl(category.slug))}" />
+  ${jsonLdScript(categoryPageJsonLd(category, articles))}
+  ${jsonLdScript(categoryBreadcrumbJsonLd(category))}`,
+  );
+}
+
+function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[]) {
+  const title = `${author.name} - Author at Laxy.in`;
+  const description = author.bio || `${author.name} ke latest articles aur updates Laxy.in par padhein.`;
+  const image = author.image_url
+    ? `<img src="${escapeHtml(optimizedImageUrl(author.image_url, 240, 72))}" width="168" height="168" alt="${escapeHtml(author.name)}" loading="eager" decoding="async" />`
+    : '<div></div>';
+  return publicShell(
+    title,
+    description,
+    `<main class="wrap profile">
+      <header class="profile-head">
+        ${image}
+        <div>
+          <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>Author</span><span>/</span><span>${escapeHtml(author.name)}</span></nav>
+          <h1>${escapeHtml(author.name)}</h1>
+          <p>${escapeHtml(description)}</p>
+        </div>
+      </header>
+    </main>${articleCardsList(articles)}`,
+    `<link rel="canonical" href="${escapeHtml(publicAuthorUrl(author.slug))}" />
+  ${jsonLdScript(personJsonLd(author))}
+  ${jsonLdScript({
+      '@context': 'https://schema.org',
+      '@type': 'ProfilePage',
+      name: title,
+      url: publicAuthorUrl(author.slug),
+      mainEntity: personJsonLd(author),
+    })}`,
   );
 }
 
@@ -1247,9 +1454,11 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
     ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 1080))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 700px) calc(100vw - 24px), 1080px" width="1360" height="765" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
   const breadcrumbTrail = article.category
-    ? `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.category)}</span><span>/</span><span>${escapeHtml(article.title)}</span>`
+    ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a><span>/</span><span>${escapeHtml(article.title)}</span>`
     : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
-  const authorLine = article.author_name ? `By ${escapeHtml(article.author_name)} &middot; ` : '';
+  const authorLine = article.author_name
+    ? `By <a href="/author/${escapeHtml(article.author_slug || slugify(article.author_name) || 'samoon-digital')}">${escapeHtml(article.author_name)}</a> &middot; `
+    : '';
   const previewBanner = preview
     ? `<div class="preview-banner"><div class="wrap"><strong>Draft preview</strong><span>Public site par publish hone se pehle ka preview.</span></div></div>`
     : '';
@@ -1265,7 +1474,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
         <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
         <h1>${escapeHtml(article.title)}</h1>
         <p class="dek">${escapeHtml(article.excerpt || article.seo_description || '')}</p>
-        <div class="date">${authorLine}Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
+        <div class="date byline">${authorLine}Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
       </header>
       ${image}
       <article class="content">${article.content}</article>
@@ -1283,12 +1492,39 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
 
   if (url.pathname === '/' || url.pathname === '') {
     const articles = await readPublishedArticles(c.env.ADMIN_DB);
-    return c.html(publicHomePage(articles));
+    const categories = await readCategories(c.env.ADMIN_DB);
+    return c.html(publicHomePage(articles, categories));
   }
 
   if (url.pathname.startsWith('/assets/')) {
     const key = decodeURIComponent(url.pathname.slice('/assets/'.length));
     return servePublicAsset(c, key);
+  }
+
+  if (url.pathname.startsWith('/category/')) {
+    const categorySlug = decodeURIComponent(url.pathname.slice('/category/'.length).replace(/^\/+|\/+$/g, ''));
+    if (!categorySlug || categorySlug.includes('/')) {
+      return c.text('Not found', 404);
+    }
+    const category = await readCategoryBySlug(c.env.ADMIN_DB, categorySlug);
+    if (!category) {
+      return c.html(publicShell('Category not found - Laxy.in', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+    }
+    const articles = await readPublishedArticlesByCategory(c.env.ADMIN_DB, category.name);
+    return c.html(publicCategoryPage(category, articles));
+  }
+
+  if (url.pathname.startsWith('/author/')) {
+    const authorSlug = decodeURIComponent(url.pathname.slice('/author/'.length).replace(/^\/+|\/+$/g, ''));
+    if (!authorSlug || authorSlug.includes('/')) {
+      return c.text('Not found', 404);
+    }
+    const author = await readAuthorBySlug(c.env.ADMIN_DB, authorSlug);
+    if (!author) {
+      return c.html(publicShell('Author not found - Laxy.in', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+    }
+    const articles = await readPublishedArticlesByAuthor(c.env.ADMIN_DB, author.id);
+    return c.html(publicAuthorPage(author, articles));
   }
 
   const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''));
@@ -1405,7 +1641,6 @@ function appShellPage(
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
       ${navItem('/authors', 'Authors', options.activeNav === 'authors')}
       ${navItem('/training', 'Training', options.activeNav === 'training')}
-      ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
           <strong>${escapeHtml(user.displayName)}</strong>
@@ -2278,7 +2513,7 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
               <div style="font-weight:600;">${escapeHtml(sample.input_title || sample.source_url || 'Training sample')}</div>
               <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(sample.title_style || '')}</div>
             </td>
-            <td>${sample.image_url ? `<img class="author-avatar" src="${escapeHtml(optimizedImageUrl(sample.image_url, 96, 72))}" alt="Training image" />` : ''}</td>
+            <td>${sample.image_url ? `<img class="author-avatar" src="${escapeHtml(sample.image_url)}" alt="Training image" />` : ''}</td>
             <td>${escapeHtml(sample.article_style || '')}</td>
           </tr>`,
       )
@@ -2314,20 +2549,8 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
                   <select id="training-category" required>${renderCategoryOptions(categories, 'News')}</select>
                 </div>
                 <div class="field">
-                  <label for="training-url">Link</label>
-                  <input id="training-url" type="url" placeholder="https://example.com/article" />
-                </div>
-                <div class="field">
-                  <label for="training-title">Example Headline</label>
-                  <input id="training-title" placeholder="Sample title/headline" />
-                </div>
-                <div class="field">
-                  <label for="training-article">Article / Notes</label>
-                  <textarea id="training-article" placeholder="Paste article, format notes, or reference copy"></textarea>
-                </div>
-                <div class="field">
-                  <label for="training-image">Image</label>
-                  <input id="training-image" type="file" accept="image/png,image/jpeg,image/webp,image/avif" />
+                  <label for="training-url">Paste Link</label>
+                  <input id="training-url" type="url" placeholder="https://example.com/article" required />
                 </div>
                 <button class="btn btn-primary btn-full" id="training-submit" type="submit">Analyze & Save</button>
                 <div class="notice" id="training-notice"></div>
@@ -2347,10 +2570,6 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
           const payload = new FormData();
           payload.set('category', document.getElementById('training-category').value);
           payload.set('sourceUrl', document.getElementById('training-url').value);
-          payload.set('title', document.getElementById('training-title').value);
-          payload.set('articleText', document.getElementById('training-article').value);
-          const image = document.getElementById('training-image').files[0];
-          if (image) payload.set('image', image);
           try {
             const res = await fetch('/api/training', { method: 'POST', body: payload });
             const data = await res.json();
@@ -2675,21 +2894,6 @@ app.get('/training', async (c) => {
   return c.html(trainingPage(session, categories, samples, message));
 });
 
-app.get('/seo', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.redirect('/');
-  }
-
-  const configs = await readSeoConfigs(c.env.ADMIN_DB);
-  const auditArticles = await readArticles(c.env.ADMIN_DB, { page: 1, perPage: 30 });
-  const categories = await readCategories(c.env.ADMIN_DB);
-  const url = new URL(c.req.url);
-  const message = url.searchParams.get('saved') ? 'SEO control save ho gaya.' : '';
-  return c.html(seoToolsPage(session, configs, auditArticles.articles, categories, message));
-});
-
 app.get('/api/me', async (c) => {
   const session = await readSession(c);
 
@@ -2976,39 +3180,28 @@ app.post('/api/training', async (c) => {
     const formData = await c.req.raw.formData();
     const category = normalizeText(formData.get('category')) || 'News';
     const sourceUrl = normalizeText(formData.get('sourceUrl'));
-    const title = normalizeText(formData.get('title'));
-    let articleText = normalizeText(formData.get('articleText'));
-    const image = formData.get('image');
     const sampleId = crypto.randomUUID();
-    const slug = slugify(title || category) || `training-${sampleId.slice(0, 8)}`;
     let imageUrl: string | null = null;
-    let imageObjectKey: string | null = null;
     let imageDataUrl = '';
 
-    if (sourceUrl) {
-      const source = await fetchReadablePageText(sourceUrl);
-      articleText = [articleText, source.title, source.text].filter(Boolean).join('\n\n').slice(0, 12000);
+    if (!sourceUrl) {
+      return c.json({ ok: false, message: 'Training ke liye link required hai' }, 400);
     }
 
-    if (!sourceUrl && !title && !articleText && !(image instanceof File && image.size > 0)) {
-      return c.json({ ok: false, message: 'Training ke liye link, title, article ya image me se kuch add karein' }, 400);
-    }
-
-    if (image instanceof File && image.size > 0) {
-      if (image.size > 4 * 1024 * 1024) {
-        return c.json({ ok: false, message: 'Training image 4MB se chhoti honi chahiye' }, 400);
-      }
-      const bytes = await image.arrayBuffer();
-      imageDataUrl = fileToDataUrl(image, bytes);
-      const uploaded = await uploadTrainingImage(c, image, sampleId, slug, bytes);
-      imageUrl = uploaded.publicUrl;
-      imageObjectKey = uploaded.objectKey;
-    }
+    const source = await fetchReadablePageText(sourceUrl);
+    imageUrl = source.imageUrl || null;
+    imageDataUrl = source.imageUrl || '';
+    const articleText = [
+      source.title ? `Page title: ${source.title}` : '',
+      source.metaDescription ? `Meta description: ${source.metaDescription}` : '',
+      source.headings?.length ? `Headlines/headings:\n${source.headings.join('\n')}` : '',
+      source.text,
+    ].filter(Boolean).join('\n\n').slice(0, 12000);
 
     const analysis = await openaiClient.analyzeTrainingSample({
       category,
       sourceUrl: sourceUrl || undefined,
-      title,
+      title: source.title,
       articleText,
       imageDataUrl,
     });
@@ -3021,10 +3214,10 @@ app.post('/api/training', async (c) => {
         sampleId,
         category,
         sourceUrl || null,
-        title || null,
+        source.title || null,
         articleText || null,
         imageUrl,
-        imageObjectKey,
+        null,
         JSON.stringify(analysis),
         analysis.title_style,
         analysis.article_style,
@@ -3041,52 +3234,6 @@ app.post('/api/training', async (c) => {
     console.error('Training error:', message);
     return c.json({ ok: false, message: `Training save failed: ${message}` }, 500);
   }
-});
-
-app.post('/api/seo-config', async (c) => {
-  const session = await requireSession(c);
-
-  if (!session) {
-    return c.json({ ok: false, message: 'Unauthorized' }, 401);
-  }
-
-  const body = await c.req.json<{
-    category?: string;
-    titleTemplate?: string;
-    keywordFocus?: string;
-    readabilityRules?: string;
-    imageGuidance?: string;
-  }>();
-  const category = normalizeText(body.category) || 'Default';
-  const now = new Date().toISOString();
-
-  await c.env.ADMIN_DB
-    .prepare(
-      `INSERT INTO seo_config (id, category, canonical_tags, schema_types, keyword_focus, title_template, h_structure, readability_rules, image_guidance, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(category) DO UPDATE SET
-         keyword_focus = excluded.keyword_focus,
-         title_template = excluded.title_template,
-         readability_rules = excluded.readability_rules,
-         image_guidance = excluded.image_guidance,
-         updated_at = excluded.updated_at`,
-    )
-    .bind(
-      crypto.randomUUID(),
-      category,
-      'Use canonical URL for every published article',
-      'Article,BreadcrumbList,FAQPageSchema,OrganizationSchema,NewsArticleSchema',
-      normalizeText(body.keywordFocus) || 'Primary keyword naturally in first 100 words with related terms.',
-      normalizeText(body.titleTemplate) || 'Primary Keyword + Benefit + Year',
-      'H1 from article title, then H2/H3 hierarchy in body',
-      normalizeText(body.readabilityRules) || 'Small paragraphs, simple Hinglish, bullets, tables where useful.',
-      normalizeText(body.imageGuidance) || 'Google Discover-friendly 16:9 editorial image, AVIF delivery, descriptive alt.',
-      now,
-      now,
-    )
-    .run();
-
-  return c.json({ ok: true });
 });
 
 app.post('/api/login', async (c: Context<{ Bindings: Bindings }>) => {
@@ -3184,9 +3331,10 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
     }
 
+    const requestedTrainingNotes = await readTrainingNotesForCategory(c.env.ADMIN_DB, requestedCategory);
     const articleBrief = source
-      ? await openaiClient.createArticleBriefFromSource(source, requestedCategory)
-      : await openaiClient.createHeadlineFromTitle(manualTitle, requestedCategory);
+      ? await openaiClient.createArticleBriefFromSource(source, requestedCategory, requestedTrainingNotes)
+      : await openaiClient.createHeadlineFromTitle(manualTitle, requestedCategory, requestedTrainingNotes);
     const title = normalizeText(articleBrief.blog_title) || manualTitle;
     const category = normalizeText(articleBrief.category) || requestedCategory;
 
@@ -3204,7 +3352,9 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
     }
 
-    const trainingNotes = await readTrainingNotesForCategory(c.env.ADMIN_DB, category);
+    const trainingNotes = category === requestedCategory
+      ? requestedTrainingNotes
+      : await readTrainingNotesForCategory(c.env.ADMIN_DB, category);
     const relatedArticles = await readRelatedArticlesForPrompt(c.env.ADMIN_DB, category, title);
     const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title, {
       controls,
