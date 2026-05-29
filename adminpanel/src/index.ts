@@ -46,6 +46,9 @@ type ArticleRow = {
   schema_markup?: string | null;
   status: string;
   author_id: string;
+  author_name?: string | null;
+  author_bio?: string | null;
+  author_image_url?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -64,6 +67,10 @@ type PublicArticleRow = {
   image_object_key: string | null;
   canonical_url: string | null;
   schema_markup: string | null;
+  author_id?: string | null;
+  author_name?: string | null;
+  author_bio?: string | null;
+  author_image_url?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -90,6 +97,31 @@ type CategoryRow = {
   sort_order: number | string;
   created_at: string;
   updated_at: string;
+};
+
+type AuthorRow = {
+  id: string;
+  name: string;
+  slug: string;
+  bio: string | null;
+  image_url: string | null;
+  image_object_key: string | null;
+  is_default: number | string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ArticleCategoryCount = {
+  category: string | null;
+  total: number | string;
+};
+
+type ArticleListResult = {
+  articles: ArticleRow[];
+  total: number;
+  page: number;
+  totalPages: number;
+  perPage: number;
 };
 
 type DashboardMetrics = {
@@ -213,6 +245,29 @@ function stripHtml(value: string) {
 function makeExcerpt(content: string, fallback: string) {
   const text = stripHtml(content) || fallback;
   return text.length > 300 ? `${text.slice(0, 297).trim()}...` : text;
+}
+
+function parsePositiveInt(value: string | null, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function buildAdminPath(path: string, params: Record<string, string | number | null | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && String(value) !== '') {
+      search.set(key, String(value));
+    }
+  }
+  const query = search.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function cleanContentType(value: string) {
+  return value.split(';', 1)[0].trim().toLowerCase();
 }
 
 function normalizeArticleContent(content: string) {
@@ -378,6 +433,37 @@ async function uploadFeaturedImage(
   };
 }
 
+async function uploadAuthorImage(c: Context<{ Bindings: Bindings }>, file: File, authorId: string, slug: string) {
+  if (!c.env.ARTICLE_IMAGES) {
+    throw new Error('R2 bucket binding ARTICLE_IMAGES is not configured');
+  }
+
+  const contentType = cleanContentType(file.type || 'image/jpeg');
+  const extension = contentType.includes('png')
+    ? 'png'
+    : contentType.includes('webp')
+      ? 'webp'
+      : contentType.includes('avif')
+        ? 'avif'
+        : 'jpg';
+  const objectKey = `authors/${slug || authorId}-${authorId}.${extension}`;
+  await c.env.ARTICLE_IMAGES.put(objectKey, await file.arrayBuffer(), {
+    httpMetadata: {
+      contentType,
+      cacheControl: 'public, max-age=31536000, immutable',
+    },
+    customMetadata: {
+      authorId,
+      provider: 'admin-upload',
+    },
+  });
+
+  return {
+    objectKey,
+    publicUrl: optimizedImageUrl(publicAssetUrl(c, objectKey), 320, 72),
+  };
+}
+
 async function recordMediaAsset(
   db: D1Database,
   articleId: string,
@@ -503,18 +589,61 @@ async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
   }
 }
 
-async function readArticles(db: D1Database) {
-  return queryAll<ArticleRow>(
-    db.prepare(
-      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at FROM articles ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 24',
-    ),
+async function readArticles(
+  db: D1Database,
+  options: { q?: string; category?: string; page?: number; perPage?: number } = {},
+): Promise<ArticleListResult> {
+  const q = normalizeText(options.q);
+  const category = normalizeText(options.category);
+  const page = Math.max(1, options.page || 1);
+  const perPage = Math.max(5, Math.min(50, options.perPage || 12));
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  if (category) {
+    if (category === 'General') {
+      where.push("(category = ? OR category IS NULL OR category = '')");
+      values.push(category);
+    } else {
+      where.push('category = ?');
+      values.push(category);
+    }
+  }
+
+  if (q) {
+    where.push('(title LIKE ? OR category LIKE ? OR excerpt LIKE ?)');
+    values.push(`%${q}%`, `%${q}%`, `%${q}%`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const totalRow = await db
+    .prepare(`SELECT COUNT(*) AS total FROM articles ${whereSql}`)
+    .bind(...values)
+    .first<{ total: number | string }>();
+  const total = Number(totalRow?.total) || 0;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const safePage = Math.min(page, totalPages);
+  const offset = (safePage - 1) * perPage;
+  const articles = await queryAll<ArticleRow>(
+    db
+      .prepare(
+        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+         FROM articles
+         LEFT JOIN authors ON authors.id = articles.author_id
+         ${whereSql}
+         ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .bind(...values, perPage, offset),
   );
+
+  return { articles, total, page: safePage, totalPages, perPage };
 }
 
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE status = 'published' ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 12",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
     ),
   );
 }
@@ -522,7 +651,7 @@ async function readPublishedArticles(db: D1Database) {
 async function readPublishedArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, created_at, updated_at FROM articles WHERE slug = ? AND status = 'published' LIMIT 1",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.slug = ? AND articles.status = 'published' LIMIT 1",
     )
     .bind(slug)
     .first<PublicArticleRow>();
@@ -531,16 +660,44 @@ async function readPublishedArticleBySlug(db: D1Database, slug: string) {
 async function readArticleById(db: D1Database, id: string) {
   return db
     .prepare(
-      'SELECT id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, status, author_id, created_at, updated_at FROM articles WHERE id = ? LIMIT 1',
+      'SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.id = ? LIMIT 1',
     )
     .bind(id)
     .first<ArticleRow>();
+}
+
+async function readArticleCategoryCounts(db: D1Database) {
+  return queryAll<ArticleCategoryCount>(
+    db.prepare(
+      "SELECT COALESCE(category, 'General') AS category, COUNT(*) AS total FROM articles GROUP BY COALESCE(category, 'General') ORDER BY total DESC, category ASC",
+    ),
+  );
 }
 
 async function readCategories(db: D1Database) {
   return queryAll<CategoryRow>(
     db.prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories ORDER BY sort_order ASC, name ASC'),
   );
+}
+
+async function readAuthors(db: D1Database) {
+  return queryAll<AuthorRow>(
+    db.prepare('SELECT id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at FROM authors ORDER BY is_default DESC, name ASC'),
+  );
+}
+
+async function resolveAuthorId(db: D1Database, requestedAuthorId: string) {
+  if (requestedAuthorId) {
+    const selected = await db.prepare('SELECT id FROM authors WHERE id = ? LIMIT 1').bind(requestedAuthorId).first<{ id: string }>();
+    if (selected?.id) {
+      return selected.id;
+    }
+  }
+
+  const fallback = await db
+    .prepare('SELECT id FROM authors ORDER BY is_default DESC, name ASC LIMIT 1')
+    .first<{ id: string }>();
+  return fallback?.id || 'default-author';
 }
 
 function renderCategoryOptions(categories: CategoryRow[], selected = '') {
@@ -560,6 +717,19 @@ function renderCategoryOptions(categories: CategoryRow[], selected = '') {
       const name = 'name' in category ? category.name : String(category);
       const value = name;
       return `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+    })
+    .join('');
+}
+
+function renderAuthorOptions(authors: AuthorRow[], selected = '') {
+  const source = authors.length
+    ? authors
+    : [{ id: 'default-author', name: 'Samoon Digital' }];
+
+  return source
+    .map((author) => {
+      const value = author.id;
+      return `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(author.name)}</option>`;
     })
     .join('');
 }
@@ -659,6 +829,15 @@ function shellStyles() {
     .article-card p { font-size: 0.8125rem; color: var(--text-muted); line-height: 1.6; }
     .article-card-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 0.8125rem; color: var(--text-dim); align-items: center; }
     .article-card-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .filter-bar { display: grid; grid-template-columns: minmax(220px, 1fr) 220px auto; gap: 10px; align-items: end; }
+    .category-strip { display: flex; gap: 8px; flex-wrap: wrap; }
+    .category-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 7px 11px; font-size: 0.8125rem; color: var(--text-muted); background: var(--surface); }
+    .category-chip.active { color: var(--btn-primary-text); background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
+    .article-table-title { display: grid; gap: 3px; min-width: 220px; }
+    .article-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    .pagination { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--text-muted); font-size: 0.875rem; }
+    .author-avatar { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--bg-subtle); }
+    .author-cell { display: flex; gap: 10px; align-items: center; }
     .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 99px; font-size: 0.75rem; font-weight: 500; border: 1px solid var(--border); white-space: nowrap; flex-shrink: 0; }
     .badge-published { background: #111; color: #fff; border-color: #111; }
     .badge-review { background: #f0f0f0; color: #555; }
@@ -670,7 +849,7 @@ function shellStyles() {
     th { padding: 8px 10px; text-align: left; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
     td { padding: 11px 10px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: top; }
     tr:last-child td { border-bottom: none; }
-    @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } .article-grid, .cols-2, .cols-aside { grid-template-columns: 1fr; } }
+    @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } .article-grid, .cols-2, .cols-aside, .filter-bar { grid-template-columns: 1fr; } }
     @media (max-width: 768px) { .app { grid-template-columns: 1fr; } .sidebar { height: auto; position: static; flex-direction: row; flex-wrap: wrap; padding: 12px 16px; } .sidebar-brand { border-bottom: none; border-right: 1px solid var(--border); margin-right: 16px; padding-right: 16px; margin-bottom: 0; } .sidebar-footer { border-top: none; padding-top: 0; margin-left: auto; } .stats-grid { grid-template-columns: repeat(2, 1fr); } .main { padding: 16px; } .page-header { flex-direction: column; } }
     @media (max-width: 480px) { .stats-grid { grid-template-columns: 1fr; } .header-actions { flex-wrap: wrap; } }
   `;
@@ -807,8 +986,8 @@ function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: str
     datePublished: article.created_at,
     dateModified: article.updated_at,
     author: {
-      '@type': 'Organization',
-      name: 'Samoon Digital',
+      '@type': 'Person',
+      name: article.author_name || 'Samoon Digital',
     },
     publisher: organizationJsonLd(),
     mainEntityOfPage: {
@@ -915,6 +1094,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
   const breadcrumbTrail = article.category
     ? `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.category)}</span><span>/</span><span>${escapeHtml(article.title)}</span>`
     : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
+  const authorLine = article.author_name ? `By ${escapeHtml(article.author_name)} &middot; ` : '';
   const previewBanner = preview
     ? `<div class="preview-banner"><div class="wrap"><strong>Draft preview</strong><span>Public site par publish hone se pehle ka preview.</span></div></div>`
     : '';
@@ -930,7 +1110,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
         <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
         <h1>${escapeHtml(article.title)}</h1>
         <p class="dek">${escapeHtml(article.excerpt || article.seo_description || '')}</p>
-        <div class="date">Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
+        <div class="date">${authorLine}Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
       </header>
       ${image}
       <article class="content">${article.content}</article>
@@ -1041,7 +1221,7 @@ function loginPage(error = '') {
 function appShellPage(
   user: SessionUser,
   options: {
-    activeNav: 'dashboard' | 'articles' | 'categories' | 'seo';
+    activeNav: 'dashboard' | 'articles' | 'categories' | 'authors' | 'seo';
     pageTitle: string;
     eyebrow: string;
     title: string;
@@ -1068,6 +1248,7 @@ function appShellPage(
       ${navItem('/', 'Dashboard', options.activeNav === 'dashboard')}
       ${navItem('/articles', 'Articles', options.activeNav === 'articles')}
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
+      ${navItem('/authors', 'Authors', options.activeNav === 'authors')}
       ${navItem('/seo', 'SEO Tools', options.activeNav === 'seo')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
@@ -1219,8 +1400,138 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
   });
 }
 
+function articlesManagementPage(
+  user: SessionUser,
+  result: ArticleListResult,
+  categoryCounts: ArticleCategoryCount[],
+  filters: { q: string; category: string },
+  message = '',
+) {
+  const categoryChips = [
+    `<a class="category-chip${filters.category ? '' : ' active'}" href="${buildAdminPath('/articles', { q: filters.q })}">All <span>${result.total}</span></a>`,
+    ...categoryCounts.map((row) => {
+      const category = row.category || 'General';
+      return `<a class="category-chip${filters.category === category ? ' active' : ''}" href="${buildAdminPath('/articles', { category, q: filters.q })}">${escapeHtml(category)} <span>${escapeHtml(String(row.total))}</span></a>`;
+    }),
+  ].join('');
 
-function aiGenerationPage(user: SessionUser, categories: CategoryRow[]) {
+  const rows = result.articles.length
+    ? result.articles
+      .map(
+        (a) => `
+          <tr>
+            <td><div class="article-table-title"><strong>${escapeHtml(a.title)}</strong></div></td>
+            <td>${escapeHtml(a.category || 'General')}</td>
+            <td>
+              <div class="article-actions">
+                ${a.status === 'published'
+            ? `<a class="btn btn-secondary" href="https://laxy.in/${escapeHtml(a.slug)}" target="_blank" rel="noopener">Live</a>
+                   <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Draft</button>`
+            : `<a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/preview" target="_blank" rel="noopener">Preview</a>
+                   <button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
+                <a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/edit">Edit</a>
+                <button class="btn btn-ghost" type="button" onclick="deleteArticle('${escapeHtml(a.id)}', this)" style="color:#cc0000;border-color:#cc0000;">Delete</button>
+              </div>
+            </td>
+          </tr>`,
+      )
+      .join('')
+    : `<tr><td colspan="3"><div class="empty-state">No articles found.</div></td></tr>`;
+
+  const prevHref = buildAdminPath('/articles', {
+    q: filters.q,
+    category: filters.category,
+    page: Math.max(1, result.page - 1),
+  });
+  const nextHref = buildAdminPath('/articles', {
+    q: filters.q,
+    category: filters.category,
+    page: Math.min(result.totalPages, result.page + 1),
+  });
+
+  return appShellPage(user, {
+    activeNav: 'articles',
+    pageTitle: 'Articles - Samoon Digital',
+    eyebrow: 'Articles',
+    title: 'Articles',
+    subtitle: 'Search, category filter, pagination aur article operations',
+    toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
+    content: `
+      <div class="stack">
+        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
+        <div class="card"><div class="card-body"><div class="category-strip">${categoryChips}</div></div></div>
+        <div class="card">
+          <div class="card-body">
+            <form class="filter-bar" method="get" action="/articles">
+              <div class="field">
+                <label for="q">Search Article</label>
+                <input id="q" name="q" value="${escapeHtml(filters.q)}" placeholder="Title, category, excerpt..." />
+              </div>
+              <div class="field">
+                <label for="category">Category</label>
+                <input id="category" name="category" value="${escapeHtml(filters.category)}" placeholder="All categories" />
+              </div>
+              <button class="btn btn-primary" type="submit">Search</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div style="overflow-x:auto;">
+            <table>
+              <thead><tr><th>Title</th><th>Category</th><th style="text-align:right;">Actions</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pagination">
+          <span>${result.total} articles &middot; Page ${result.page} of ${result.totalPages}</span>
+          <div style="display:flex;gap:8px;">
+            <a class="btn btn-secondary" href="${prevHref}" ${result.page <= 1 ? 'aria-disabled="true" style="pointer-events:none;opacity:.5;"' : ''}>Previous</a>
+            <a class="btn btn-secondary" href="${nextHref}" ${result.page >= result.totalPages ? 'aria-disabled="true" style="pointer-events:none;opacity:.5;"' : ''}>Next</a>
+          </div>
+        </div>
+      </div>
+      <script>
+        async function updateArticleStatus(id, status, btn) {
+          const originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = status === 'published' ? 'Publishing...' : 'Saving...';
+          try {
+            const res = await fetch('/api/articles/' + id + '/status', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Status update failed');
+            window.location.href = '/articles?status=' + encodeURIComponent(status);
+          } catch (err) {
+            alert(err.message || 'Status update failed');
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        }
+
+        async function deleteArticle(id, btn) {
+          if (!confirm('Is article ko permanently delete karein?')) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/articles/' + id, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Delete failed');
+            window.location.href = '/articles?deleted=1';
+          } catch (err) {
+            alert(err.message || 'Delete failed');
+            btn.disabled = false;
+          }
+        }
+      </script>
+    `,
+  });
+}
+
+
+function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors: AuthorRow[]) {
   return appShellPage(user, {
     activeNav: 'articles',
     pageTitle: 'Generate Article — Samoon Digital',
@@ -1247,6 +1558,12 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[]) {
                 <select id="category" name="category" required>
                   <option value="">Select category...</option>
                   ${renderCategoryOptions(categories, 'News')}
+                </select>
+              </div>
+              <div class="field">
+                <label for="author-id">Author</label>
+                <select id="author-id" name="author_id" required>
+                  ${renderAuthorOptions(authors, authors.find((author) => Number(author.is_default) === 1)?.id || authors[0]?.id || 'default-author')}
                 </select>
               </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
@@ -1353,6 +1670,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[]) {
                 sourceUrl,
                 title,
                 category: document.getElementById('category').value,
+                authorId: document.getElementById('author-id').value,
               }),
             });
             const data = await res.json();
@@ -1367,6 +1685,101 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[]) {
             notice.className = 'notice error';
             btn.disabled = false;
             btn.textContent = 'Generate with AI';
+          }
+        });
+      </script>
+    `,
+  });
+}
+
+function editArticlePage(user: SessionUser, article: ArticleRow, categories: CategoryRow[], authors: AuthorRow[]) {
+  return appShellPage(user, {
+    activeNav: 'articles',
+    pageTitle: `Edit Article - ${article.title}`,
+    eyebrow: 'Article Editor',
+    title: 'Edit Article',
+    subtitle: 'Title, category, author, SEO fields aur content update karein.',
+    toolbar: `<a class="btn btn-secondary" href="/articles">Back to Articles</a>`,
+    content: `
+      <div class="card">
+        <div class="card-body">
+          <form class="form" id="article-edit-form">
+            <div class="cols-2">
+              <div class="field">
+                <label for="title">Title</label>
+                <input id="title" value="${escapeHtml(article.title)}" required />
+              </div>
+              <div class="field">
+                <label for="category">Category</label>
+                <select id="category">${renderCategoryOptions(categories, article.category || 'News')}</select>
+              </div>
+            </div>
+            <div class="cols-2">
+              <div class="field">
+                <label for="author-id">Author</label>
+                <select id="author-id">${renderAuthorOptions(authors, article.author_id)}</select>
+              </div>
+              <div class="field">
+                <label for="status">Status</label>
+                <select id="status">
+                  <option value="draft"${article.status === 'draft' ? ' selected' : ''}>Draft</option>
+                  <option value="review"${article.status === 'review' ? ' selected' : ''}>Review</option>
+                  <option value="published"${article.status === 'published' ? ' selected' : ''}>Published</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="excerpt">Excerpt</label>
+              <textarea id="excerpt">${escapeHtml(article.excerpt || '')}</textarea>
+            </div>
+            <div class="cols-2">
+              <div class="field">
+                <label for="seo-title">SEO Title</label>
+                <input id="seo-title" value="${escapeHtml(article.seo_title || '')}" />
+              </div>
+              <div class="field">
+                <label for="seo-description">SEO Description</label>
+                <textarea id="seo-description">${escapeHtml(article.seo_description || '')}</textarea>
+              </div>
+            </div>
+            <div class="field">
+              <label for="content">Content HTML</label>
+              <textarea id="content" style="min-height:360px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;">${escapeHtml(article.content)}</textarea>
+            </div>
+            <button class="btn btn-primary" type="submit" id="save-article">Save Article</button>
+            <div class="notice" id="article-notice"></div>
+          </form>
+        </div>
+      </div>
+      <script>
+        const form = document.getElementById('article-edit-form');
+        const notice = document.getElementById('article-notice');
+        const btn = document.getElementById('save-article');
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/articles/${escapeHtml(article.id)}', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: document.getElementById('title').value,
+                category: document.getElementById('category').value,
+                authorId: document.getElementById('author-id').value,
+                status: document.getElementById('status').value,
+                excerpt: document.getElementById('excerpt').value,
+                seoTitle: document.getElementById('seo-title').value,
+                seoDescription: document.getElementById('seo-description').value,
+                content: document.getElementById('content').value,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Article save failed');
+            window.location.href = '/articles?saved=1';
+          } catch (err) {
+            notice.textContent = err.message || 'Article save failed';
+            notice.className = 'notice error';
+            btn.disabled = false;
           }
         });
       </script>
@@ -1524,6 +1937,149 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
   });
 }
 
+function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
+  const rows = authors.length
+    ? authors
+      .map(
+        (author) => `
+          <tr>
+            <td>
+              <div class="author-cell">
+                ${author.image_url ? `<img class="author-avatar" src="${escapeHtml(optimizedImageUrl(author.image_url, 96, 72))}" alt="${escapeHtml(author.name)}" />` : '<div class="author-avatar"></div>'}
+                <div>
+                  <div style="font-weight:600;">${escapeHtml(author.name)}</div>
+                  <div style="font-size:0.8125rem;color:var(--text-muted);">/${escapeHtml(author.slug)}</div>
+                </div>
+              </div>
+            </td>
+            <td>${escapeHtml(author.bio || '')}</td>
+            <td>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" type="button" onclick="editAuthor('${escapeHtml(author.id)}')">Edit</button>
+                <button class="btn btn-ghost" type="button" onclick="deleteAuthor('${escapeHtml(author.id)}', this)" style="color:#cc0000;border-color:#cc0000;">Delete</button>
+              </div>
+            </td>
+          </tr>`,
+      )
+      .join('')
+    : `<tr><td colspan="3"><div class="empty-state">No authors yet.</div></td></tr>`;
+  const authorJson = escapeJsonForHtml(authors);
+
+  return appShellPage(user, {
+    activeNav: 'authors',
+    pageTitle: 'Authors | Samoon Digital Admin',
+    eyebrow: 'Bylines',
+    title: 'Authors',
+    subtitle: 'Article generator ke liye author name, image aur description manage karein.',
+    toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
+    content: `
+      <div class="stack">
+        ${message ? `<div class="notice ok">${escapeHtml(message)}</div>` : ''}
+        <div class="cols-aside">
+          <div class="card">
+            <div class="card-header"><h2>Manage Authors</h2></div>
+            <div style="overflow-x:auto;">
+              <table>
+                <thead><tr><th>Author</th><th>Description</th><th>Actions</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2 id="author-form-title">Add Author</h2></div>
+            <div class="card-body">
+              <form class="form" id="author-form">
+                <input id="author-id" type="hidden" />
+                <div class="field">
+                  <label for="author-name">Author Name</label>
+                  <input id="author-name" required placeholder="Author name" />
+                </div>
+                <div class="field">
+                  <label for="author-bio">Description</label>
+                  <textarea id="author-bio" placeholder="Short author bio"></textarea>
+                </div>
+                <div class="field">
+                  <label for="author-image">Author Image</label>
+                  <input id="author-image" type="file" accept="image/png,image/jpeg,image/webp,image/avif" />
+                </div>
+                <button class="btn btn-primary btn-full" id="author-submit" type="submit">Save Author</button>
+                <button class="btn btn-secondary btn-full" id="author-cancel" type="button" style="display:none;">Cancel Edit</button>
+                <div class="notice" id="author-notice"></div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script>
+        const authors = ${authorJson};
+        const form = document.getElementById('author-form');
+        const notice = document.getElementById('author-notice');
+        const cancelBtn = document.getElementById('author-cancel');
+
+        function resetAuthorForm() {
+          document.getElementById('author-id').value = '';
+          document.getElementById('author-name').value = '';
+          document.getElementById('author-bio').value = '';
+          document.getElementById('author-image').value = '';
+          document.getElementById('author-form-title').textContent = 'Add Author';
+          cancelBtn.style.display = 'none';
+          notice.textContent = '';
+          notice.className = 'notice';
+        }
+
+        function editAuthor(id) {
+          const author = authors.find((item) => item.id === id);
+          if (!author) return;
+          document.getElementById('author-id').value = author.id;
+          document.getElementById('author-name').value = author.name;
+          document.getElementById('author-bio').value = author.bio || '';
+          document.getElementById('author-form-title').textContent = 'Edit Author';
+          cancelBtn.style.display = '';
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        cancelBtn.addEventListener('click', resetAuthorForm);
+
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const id = document.getElementById('author-id').value;
+          const payload = new FormData();
+          payload.set('name', document.getElementById('author-name').value);
+          payload.set('bio', document.getElementById('author-bio').value);
+          const image = document.getElementById('author-image').files[0];
+          if (image) payload.set('image', image);
+          try {
+            const res = await fetch(id ? '/api/authors/' + id : '/api/authors', {
+              method: id ? 'PATCH' : 'POST',
+              body: payload,
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Author save failed');
+            window.location.href = '/authors?saved=1';
+          } catch (err) {
+            notice.textContent = err.message || 'Author save failed';
+            notice.className = 'notice error';
+          }
+        });
+
+        async function deleteAuthor(id, btn) {
+          if (!confirm('Is author ko delete karein? Existing articles me author fallback use hoga.')) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch('/api/authors/' + id, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Delete failed');
+            window.location.href = '/authors?deleted=1';
+          } catch (err) {
+            alert(err.message || 'Delete failed');
+            btn.disabled = false;
+          }
+        }
+      </script>
+    `,
+  });
+}
+
 function placeholderPage(
   user: SessionUser,
   activeNav: 'seo',
@@ -1576,17 +2132,25 @@ app.get('/articles', async (c) => {
   }
 
   const url = new URL(c.req.url);
-  const articles = await readArticles(c.env.ADMIN_DB);
+  const q = normalizeText(url.searchParams.get('q'));
+  const category = normalizeText(url.searchParams.get('category'));
+  const page = parsePositiveInt(url.searchParams.get('page'), 1, 1, 9999);
+  const articles = await readArticles(c.env.ADMIN_DB, { q, category, page, perPage: 12 });
+  const categoryCounts = await readArticleCategoryCounts(c.env.ADMIN_DB);
   const message = url.searchParams.get('created')
     ? 'Article D1 database me save ho gaya.'
     : url.searchParams.get('generated')
       ? 'AI-generated article draft me save ho gaya. Preview karke publish karein.'
-    : url.searchParams.get('status') === 'published'
-      ? 'Article live publish ho gaya.'
-      : url.searchParams.get('status') === 'draft'
-        ? 'Article draft me move ho gaya.'
-        : '';
-  return c.html(articlesPage(session, articles, message));
+      : url.searchParams.get('saved')
+        ? 'Article save ho gaya.'
+        : url.searchParams.get('deleted')
+          ? 'Article delete ho gaya.'
+          : url.searchParams.get('status') === 'published'
+            ? 'Article live publish ho gaya.'
+            : url.searchParams.get('status') === 'draft'
+              ? 'Article draft me move ho gaya.'
+              : '';
+  return c.html(articlesManagementPage(session, articles, categoryCounts, { q, category }, message));
 });
 
 app.get('/articles/new', async (c) => {
@@ -1597,7 +2161,8 @@ app.get('/articles/new', async (c) => {
   }
 
   const categories = await readCategories(c.env.ADMIN_DB);
-  return c.html(aiGenerationPage(session, categories));
+  const authors = await readAuthors(c.env.ADMIN_DB);
+  return c.html(aiGenerationPage(session, categories, authors));
 });
 
 app.get('/articles/:id/preview', async (c) => {
@@ -1623,6 +2188,23 @@ app.get('/articles/:id/preview', async (c) => {
   return c.html(publicArticlePage(article, { preview: article.status !== 'published' }));
 });
 
+app.get('/articles/:id/edit', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.redirect('/');
+  }
+
+  const article = await readArticleById(c.env.ADMIN_DB, c.req.param('id'));
+  if (!article) {
+    return c.redirect('/articles');
+  }
+
+  const categories = await readCategories(c.env.ADMIN_DB);
+  const authors = await readAuthors(c.env.ADMIN_DB);
+  return c.html(editArticlePage(session, article, categories, authors));
+});
+
 app.get('/categories', async (c) => {
   const session = await requireSession(c);
 
@@ -1638,6 +2220,23 @@ app.get('/categories', async (c) => {
       ? 'Category delete ho gayi.'
       : '';
   return c.html(categoriesPage(session, categories, message));
+});
+
+app.get('/authors', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.redirect('/');
+  }
+
+  const authors = await readAuthors(c.env.ADMIN_DB);
+  const url = new URL(c.req.url);
+  const message = url.searchParams.get('saved')
+    ? 'Author save ho gaya.'
+    : url.searchParams.get('deleted')
+      ? 'Author delete ho gaya.'
+      : '';
+  return c.html(authorsPage(session, authors, message));
 });
 
 app.get('/seo', async (c) => {
@@ -1690,6 +2289,77 @@ app.patch('/api/articles/:id/status', async (c) => {
     .run();
 
   return c.json({ ok: true, status });
+});
+
+app.patch('/api/articles/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{
+    title?: string;
+    category?: string;
+    authorId?: string;
+    status?: string;
+    excerpt?: string;
+    seoTitle?: string;
+    seoDescription?: string;
+    content?: string;
+  }>();
+  const title = normalizeText(body.title);
+  const content = normalizeText(body.content);
+  const category = normalizeText(body.category) || 'News';
+  const status = normalizeText(body.status) || 'draft';
+  const allowedStatuses = new Set(['draft', 'review', 'published']);
+
+  if (!title || !content) {
+    return c.json({ ok: false, message: 'Title aur content required hai' }, 400);
+  }
+
+  if (!allowedStatuses.has(status)) {
+    return c.json({ ok: false, message: 'Invalid article status' }, 400);
+  }
+
+  const article = await readArticleById(c.env.ADMIN_DB, id);
+  if (!article) {
+    return c.json({ ok: false, message: 'Article not found' }, 404);
+  }
+
+  const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare(
+      'UPDATE articles SET title = ?, excerpt = ?, content = ?, category = ?, seo_title = ?, seo_description = ?, status = ?, author_id = ?, updated_at = ? WHERE id = ?',
+    )
+    .bind(
+      title,
+      normalizeText(body.excerpt) || makeExcerpt(content, title),
+      content,
+      category,
+      normalizeText(body.seoTitle) || null,
+      normalizeText(body.seoDescription) || null,
+      status,
+      authorId,
+      now,
+      id,
+    )
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete('/api/articles/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  await c.env.ADMIN_DB.prepare('DELETE FROM articles WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ ok: true });
 });
 
 app.post('/api/categories', async (c) => {
@@ -1752,6 +2422,101 @@ app.delete('/api/categories/:id', async (c) => {
   }
 
   await c.env.ADMIN_DB.prepare('DELETE FROM categories WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
+app.post('/api/authors', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const formData = await c.req.raw.formData();
+  const name = normalizeText(formData.get('name'));
+  const bio = normalizeText(formData.get('bio'));
+  const image = formData.get('image');
+  const authorId = crypto.randomUUID();
+  const slug = slugify(name) || `author-${authorId.slice(0, 8)}`;
+
+  if (!name) {
+    return c.json({ ok: false, message: 'Author name required hai' }, 400);
+  }
+
+  let imageUrl: string | null = null;
+  let imageObjectKey: string | null = null;
+  if (image instanceof File && image.size > 0) {
+    const uploaded = await uploadAuthorImage(c, image, authorId, slug);
+    imageUrl = uploaded.publicUrl;
+    imageObjectKey = uploaded.objectKey;
+  }
+
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare('INSERT INTO authors (id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
+    .bind(authorId, name, slug, bio || null, imageUrl, imageObjectKey, now, now)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.patch('/api/authors/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const id = c.req.param('id');
+  const existing = await c.env.ADMIN_DB.prepare('SELECT * FROM authors WHERE id = ? LIMIT 1').bind(id).first<AuthorRow>();
+  if (!existing) {
+    return c.json({ ok: false, message: 'Author not found' }, 404);
+  }
+
+  const formData = await c.req.raw.formData();
+  const name = normalizeText(formData.get('name'));
+  const bio = normalizeText(formData.get('bio'));
+  const image = formData.get('image');
+  const slug = slugify(name) || existing.slug;
+
+  if (!name) {
+    return c.json({ ok: false, message: 'Author name required hai' }, 400);
+  }
+
+  let imageUrl = existing.image_url;
+  let imageObjectKey = existing.image_object_key;
+  if (image instanceof File && image.size > 0) {
+    const uploaded = await uploadAuthorImage(c, image, id, slug);
+    imageUrl = uploaded.publicUrl;
+    imageObjectKey = uploaded.objectKey;
+  }
+
+  await c.env.ADMIN_DB
+    .prepare('UPDATE authors SET name = ?, slug = ?, bio = ?, image_url = ?, image_object_key = ?, updated_at = ? WHERE id = ?')
+    .bind(name, slug, bio || null, imageUrl, imageObjectKey, new Date().toISOString(), id)
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete('/api/authors/:id', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const id = c.req.param('id');
+  const defaultAuthor = await c.env.ADMIN_DB
+    .prepare('SELECT id FROM authors WHERE id != ? ORDER BY is_default DESC, name ASC LIMIT 1')
+    .bind(id)
+    .first<{ id: string }>();
+  if (!defaultAuthor?.id) {
+    return c.json({ ok: false, message: 'Kam se kam ek author required hai' }, 400);
+  }
+
+  await c.env.ADMIN_DB.prepare('UPDATE articles SET author_id = ? WHERE author_id = ?').bind(defaultAuthor.id, id).run();
+  await c.env.ADMIN_DB.prepare('DELETE FROM authors WHERE id = ?').bind(id).run();
   return c.json({ ok: true });
 });
 
@@ -1826,10 +2591,11 @@ app.post('/api/articles/generate', async (c) => {
     });
     const openaiClient = getOpenAIClient();
 
-    const body = await c.req.json<{ title?: string; category?: string; sourceUrl?: string }>();
+    const body = await c.req.json<{ title?: string; category?: string; sourceUrl?: string; authorId?: string }>();
     const manualTitle = normalizeText(body.title);
     const requestedCategory = normalizeText(body.category) || 'News';
     const sourceUrl = normalizeText(body.sourceUrl);
+    const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
     const source = sourceUrl ? await fetchReadablePageText(sourceUrl) : null;
 
     if (!source && !manualTitle) {
@@ -1890,7 +2656,7 @@ app.post('/api/articles/generate', async (c) => {
         schemaMarkup,
         source?.url || null,
         'draft',
-        session.id,
+        authorId,
         now,
         now,
       )
