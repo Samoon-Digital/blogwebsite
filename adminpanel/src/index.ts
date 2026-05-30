@@ -320,7 +320,153 @@ function resolveSourceUrl(baseUrl: string, maybeUrl: string) {
 
 function makeExcerpt(content: string, fallback: string) {
   const text = stripHtml(content) || fallback;
-  return text.length > 300 ? `${text.slice(0, 297).trim()}...` : text;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= 26) {
+    return words.join(' ');
+  }
+  return `${words.slice(0, 26).join(' ')}...`;
+}
+
+function limitTextWords(value: string, maxWords: number) {
+  const words = normalizeText(stripHtml(value)).split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return '';
+  }
+  if (words.length <= maxWords) {
+    return words.join(' ');
+  }
+  return `${words.slice(0, maxWords).join(' ')}...`;
+}
+
+function estimateReadMinutes(value: string) {
+  const wordCount = stripHtml(value).split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(wordCount / 220));
+}
+
+function isVacancyArticle(category: string | null | undefined, title = '') {
+  return /vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(`${category || ''} ${title}`);
+}
+
+function extractHtmlBlocks(content: string, maxBlocks: number) {
+  const blocks = Array.from(
+    content.matchAll(/<(p|ul|ol|table|blockquote|figure)\b[\s\S]*?<\/\1>/gi),
+    (match) => match[0].trim(),
+  ).filter(Boolean);
+
+  if (!blocks.length) {
+    return content.trim();
+  }
+
+  return blocks.slice(0, maxBlocks).join('\n');
+}
+
+function splitArticleIntoH2Sections(content: string) {
+  const sections: Array<{ headingText: string; html: string }> = [];
+  const matches = Array.from(content.matchAll(/<h2\b[^>]*>[\s\S]*?<\/h2>/gi));
+  const intro = matches.length ? content.slice(0, matches[0].index || 0).trim() : content.trim();
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const start = matches[index].index || 0;
+    const end = index + 1 < matches.length ? (matches[index + 1].index || content.length) : content.length;
+    const html = content.slice(start, end).trim();
+    sections.push({
+      headingText: stripHtml(matches[index][0]).toLowerCase(),
+      html,
+    });
+  }
+
+  return { intro, sections };
+}
+
+function compactVacancySection(sectionHtml: string, headingText: string) {
+  if (/faq|frequently asked|सवाल|प्रश्न/i.test(headingText)) {
+    return sectionHtml.trim();
+  }
+
+  const headingMatch = sectionHtml.match(/^\s*<h2\b[^>]*>[\s\S]*?<\/h2>/i);
+  const headingHtml = headingMatch?.[0]?.trim() || '';
+  const bodyHtml = sectionHtml.slice(headingHtml.length).trim();
+  const compactBody = extractHtmlBlocks(bodyHtml, 2);
+  return [headingHtml, compactBody].filter(Boolean).join('\n').trim();
+}
+
+function compactVacancyArticleContent(content: string) {
+  const normalizedContent = normalizeLegacyInternalArticlePaths(normalizeArticleContent(content))
+    .replace(/<h2\b[^>]*>\s*(?:Table of Contents|TOC|विषय सूची)\s*<\/h2>[\s\S]*?(?=<h2\b|$)/gi, '')
+    .trim();
+  if (!normalizedContent) {
+    return '';
+  }
+
+  const videoSectionMatch = normalizedContent.match(/<!--ARTICLE_VIDEO_START-->[\s\S]*?<!--ARTICLE_VIDEO_END-->/i);
+  const videoSection = videoSectionMatch?.[0]?.trim() || '';
+  const withoutVideo = stripArticleVideoSection(normalizedContent);
+  const internalLinksMatch = withoutVideo.match(/<div class="internal-links">[\s\S]*?<\/div>\s*$/i);
+  const internalLinksBlock = internalLinksMatch?.[0]?.trim() || '';
+  const baseContent = stripInternalLinksBlock(withoutVideo);
+  const { intro, sections } = splitArticleIntoH2Sections(baseContent);
+  const compactIntro = extractHtmlBlocks(intro, 2);
+  const keepSectionPattern =
+    /overview|summary|highlights?|main points|post|posts|vacancy|eligibility|qualification|age limit|application fee|fee|important dates?|dates?|selection process|salary|pay scale|how to apply|apply online|important links|notification|faq|documents|required documents|योग्यता|आयु|शुल्क|तिथि|पोस्ट|भर्ती|वैकेंसी|चयन|आवेदन|लिंक/i;
+  const dropSectionPattern =
+    /table of contents|toc|विषय सूची|about department|department overview|why this matters|career tips|preparation tips|common mistakes|detailed analysis/i;
+
+  const preferredSections = sections
+    .filter((section) => !dropSectionPattern.test(section.headingText) && keepSectionPattern.test(section.headingText))
+    .map((section) => compactVacancySection(section.html, section.headingText))
+    .filter(Boolean);
+
+  const fallbackSections = sections
+    .filter((section) => !dropSectionPattern.test(section.headingText))
+    .slice(0, 5)
+    .map((section) => compactVacancySection(section.html, section.headingText))
+    .filter(Boolean);
+
+  return [compactIntro, ...(preferredSections.length ? preferredSections : fallbackSections).slice(0, 6), internalLinksBlock, videoSection]
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+function getDisplayArticleContent(article: Pick<PublicArticleRow | ArticleRow, 'title' | 'category' | 'content'>) {
+  if (!isVacancyArticle(article.category, article.title)) {
+    return article.content || '';
+  }
+  return compactVacancyArticleContent(article.content || '');
+}
+
+function formatRelativeTimeLabel(value: string) {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) {
+    return formatDateLabel(value);
+  }
+
+  const diffMs = Date.now() - time;
+  if (diffMs < 60 * 1000) {
+    return 'अभी-अभी';
+  }
+
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  const month = 30 * day;
+
+  if (diffMs < hour) {
+    const minutes = Math.max(1, Math.floor(diffMs / minute));
+    return `${minutes} मिनट पहले`;
+  }
+
+  if (diffMs < day) {
+    const hours = Math.max(1, Math.floor(diffMs / hour));
+    return `${hours} घंटे पहले`;
+  }
+
+  if (diffMs < month) {
+    const days = Math.max(1, Math.floor(diffMs / day));
+    return `${days} दिन पहले`;
+  }
+
+  return formatDateLabel(value);
 }
 
 function parsePositiveInt(value: string | null, fallback: number, min: number, max: number) {
@@ -424,6 +570,74 @@ function normalizeArticleContent(content: string) {
     .replace(/^\s*```(?:html)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
+}
+
+function stripInternalLinksBlock(content: string) {
+  return content.replace(/\s*<div class="internal-links">[\s\S]*?<\/div>\s*$/i, '\n').trim();
+}
+
+function normalizeLegacyInternalArticlePaths(content: string) {
+  return content.replace(/href=(["'])\/articles\/([^"']+)\1/gi, 'href=$1/$2$1');
+}
+
+function countInlineArticleLinks(content: string) {
+  return Array.from(content.matchAll(/href=(["'])\/(?!category\/|author\/|assets\/|#|\/)[^"']+\1/gi)).length;
+}
+
+function buildRelatedArticlesCtaBlock(relatedArticles: Array<{ title: string; slug: string; category?: string | null }>, category: string) {
+  if (!relatedArticles.length) {
+    return '';
+  }
+
+  const items = relatedArticles
+    .slice(0, 4)
+    .map((article) => `<li><a href="/${escapeHtml(article.slug)}">${escapeHtml(article.title)}</a></li>`)
+    .join('');
+  const label = category ? `${escapeHtml(category)} se jude` : 'Is topic se jude';
+  return `<div class="internal-links"><h3>ऐसे ही जुड़े लेख</h3><p>${label} aur updates ke liye ye articles bhi padhein:</p><ul>${items}</ul></div>`;
+}
+
+function injectInlineInternalLinks(content: string, relatedArticles: Array<{ title: string; slug: string; category?: string | null }>) {
+  const existingContent = normalizeLegacyInternalArticlePaths(content);
+  const existingLinks = countInlineArticleLinks(existingContent);
+  if (existingLinks >= 2 || !relatedArticles.length) {
+    return existingContent;
+  }
+
+  const queue = relatedArticles
+    .filter((article) => article.slug && article.title && !existingContent.includes(`href="/${article.slug}"`))
+    .slice(0, Math.max(0, 2 - existingLinks));
+
+  if (!queue.length) {
+    return existingContent;
+  }
+
+  let insertionIndex = 0;
+  return existingContent.replace(/<p>([\s\S]*?)<\/p>/gi, (match, inner) => {
+    if (insertionIndex >= queue.length) {
+      return match;
+    }
+
+    if (/<a\b/i.test(inner) || stripHtml(inner).split(/\s+/).filter(Boolean).length < 18) {
+      return match;
+    }
+
+    const related = queue[insertionIndex];
+    insertionIndex += 1;
+    return `<p>${inner.trim()} Is topic ko aur detail me samajhne ke liye <a href="/${escapeHtml(related.slug)}">${escapeHtml(related.title)}</a> bhi dekhein.</p>`;
+  });
+}
+
+function ensureArticleInternalLinks(content: string, relatedArticles: Array<{ title: string; slug: string; category?: string | null }>, category: string) {
+  const normalizedContent = normalizeLegacyInternalArticlePaths(content);
+  if (!relatedArticles.length) {
+    return normalizedContent.trim();
+  }
+
+  const contentWithoutCta = stripInternalLinksBlock(normalizedContent);
+  const withInlineLinks = injectInlineInternalLinks(contentWithoutCta, relatedArticles);
+  const ctaBlock = buildRelatedArticlesCtaBlock(relatedArticles, category);
+  return [withInlineLinks.trim(), ctaBlock].filter(Boolean).join('\n\n').trim();
 }
 
 function extractYouTubeVideoId(value: string) {
@@ -1011,7 +1225,7 @@ async function readArticles(
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
     ),
   );
 }
@@ -1118,13 +1332,37 @@ async function readTrainingStylesForCategory(db: D1Database, category: string): 
 }
 
 async function readRelatedArticlesForPrompt(db: D1Database, category: string, currentTitle: string) {
-  return queryAll<{ title: string; slug: string; category: string | null }>(
+  if (!category) {
+    return queryAll<{ title: string; slug: string; category: string | null }>(
+      db
+        .prepare(
+          "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 6",
+        )
+        .bind(currentTitle),
+    );
+  }
+
+  const scopedArticles = await queryAll<{ title: string; slug: string; category: string | null }>(
     db
       .prepare(
-        "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) AND (category = ? OR ? = '') ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 6",
+        "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) AND category = ? ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT 6",
       )
-      .bind(currentTitle, category, category),
+      .bind(currentTitle, category),
   );
+
+  if (scopedArticles.length >= 6) {
+    return scopedArticles;
+  }
+
+  const fallbackArticles = await queryAll<{ title: string; slug: string; category: string | null }>(
+    db
+      .prepare(
+        "SELECT title, slug, category FROM articles WHERE status = 'published' AND lower(title) != lower(?) AND (category IS NULL OR category != ?) ORDER BY datetime(updated_at) DESC, rowid DESC LIMIT ?",
+      )
+      .bind(currentTitle, category, Math.max(0, 6 - scopedArticles.length)),
+  );
+
+  return [...scopedArticles, ...fallbackArticles];
 }
 
 async function resolveAuthorId(db: D1Database, requestedAuthorId: string) {
@@ -1346,26 +1584,45 @@ function publicStyles() {
     .post-card img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
     .post-card-body { padding: 16px 16px 18px; display: grid; gap: 10px; align-content: start; min-height: 100%; }
     .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
-    .post-card h2 { font-size: 1.08rem; line-height: 1.48; letter-spacing: -0.01em; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .post-card h2 { font-size: 1.08rem; line-height: 1.48; letter-spacing: -0.01em; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
     .post-card p { color: var(--muted); line-height: 1.68; font-size: 0.92rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 4.7em; }
     .date { color: #5f6368; font-size: 0.82rem; }
     .byline a { color: var(--accent); font-weight: 600; }
+    .article-card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.83rem; }
+    .article-card-meta span::after { content: "•"; margin-left: 10px; color: #c2c8d2; }
+    .article-card-meta span:last-child::after { content: ""; margin: 0; }
     .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
     .hero { padding: 28px 0 18px; background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 100%); border-bottom: 1px solid var(--border); }
     .hero h1 { font-size: clamp(1.6rem, 1.35rem + 1vw, 2.4rem); line-height: 1.2; letter-spacing: -0.02em; max-width: 820px; }
     .hero p { margin-top: 10px; color: var(--muted); line-height: 1.72; max-width: 720px; font-size: 0.98rem; }
     .article { padding: 26px 0 56px; }
-    .article-head { display: grid; gap: 12px; padding-bottom: 18px; }
-    .article h1 { max-width: 900px; font-size: clamp(1.8rem, 1.5rem + 1vw, 3rem); line-height: 1.22; letter-spacing: -0.02em; word-break: break-word; }
-    .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1rem; }
+    .article-head { display: grid; gap: 14px; padding-bottom: 18px; max-width: 760px; }
+    .article h1 { max-width: 760px; font-size: clamp(1.95rem, 1.6rem + 0.78vw, 2.55rem); line-height: 1.24; letter-spacing: -0.02em; font-weight: 800; overflow-wrap: anywhere; word-break: break-word; }
+    .article .dek { color: #566171; max-width: 760px; line-height: 1.68; font-size: clamp(1.14rem, 1.06rem + 0.28vw, 1.34rem); font-style: normal; font-weight: 500; }
     .breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.84rem; }
     .breadcrumbs a { color: var(--accent); }
     .preview-banner { border-bottom: 1px solid var(--border); background: #111; color: #fff; font-size: 0.88rem; }
     .preview-banner .wrap { padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-    .featured { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); margin: 6px 0 24px; background: var(--soft); }
-    .content { max-width: 760px; font-size: 1rem; line-height: 1.8; }
-    .content h1, .content h2, .content h3 { line-height: 1.25; margin: 1.6em 0 0.55em; letter-spacing: 0; }
-    .content p, .content ul, .content ol, .content table, .content blockquote { margin: 0 0 1.05em; }
+    .featured { display: block; width: min(100%, 760px); max-width: 760px; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 14px; border: 1px solid var(--border); margin: 4px 0 18px; background: var(--soft); }
+    .article-meta-panel { max-width: 760px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+    .article-author-block { display: inline-flex; align-items: center; gap: 12px; min-width: 0; }
+    .article-author-avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; background: #eef2f7; border: 1px solid var(--border); flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; color: #475467; }
+    .article-author-copy { display: grid; gap: 2px; min-width: 0; }
+    .article-author-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .article-author-name { font-size: 0.96rem; font-weight: 700; color: var(--text); }
+    .article-facts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.88rem; }
+    .article-facts span::after { content: "•"; margin-left: 10px; color: #c2c8d2; }
+    .article-facts span:last-child::after { content: ""; margin: 0; }
+    .share-strip { max-width: 760px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 24px; }
+    .share-label { font-size: 0.8rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .share-link { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: #fff; color: #243041; font-size: 0.88rem; font-weight: 600; transition: background 0.16s ease, border-color 0.16s ease; }
+    .share-link:hover { background: #f6f8fb; border-color: #cad3df; }
+    .content { max-width: 760px; font-size: clamp(1rem, 0.97rem + 0.18vw, 1.06rem); line-height: 1.88; color: #18202c; }
+    .content h1, .content h2, .content h3 { line-height: 1.28; margin: 1.65em 0 0.6em; letter-spacing: -0.01em; }
+    .content h2 { font-size: clamp(1.32rem, 1.22rem + 0.45vw, 1.8rem); }
+    .content h3 { font-size: clamp(1.12rem, 1.04rem + 0.25vw, 1.34rem); }
+    .content p, .content ul, .content ol, .content table, .content blockquote { margin: 0 0 1.08em; }
+    .content p, .content li { overflow-wrap: anywhere; }
     .content > * { content-visibility: auto; contain-intrinsic-size: auto 180px; }
     .content ul, .content ol { padding-left: 1.4em; }
     .content table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
@@ -1378,6 +1635,10 @@ function publicStyles() {
     .content .article-video h2 { margin-top: 0; }
     .content .video-frame { position: relative; width: 100%; padding-top: 56.25%; overflow: hidden; border-radius: 8px; background: #000; margin: 14px 0; }
     .content .video-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .content .internal-links { margin-top: 2em; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: linear-gradient(180deg, #f7f9fc 0%, #ffffff 100%); }
+    .content .internal-links h3 { margin-top: 0; margin-bottom: 10px; font-size: 1.1rem; }
+    .content .internal-links p { margin-bottom: 10px; }
+    .content .internal-links ul { padding-left: 1.2em; margin-bottom: 0; }
     .profile { padding: 28px 0 52px; display: grid; gap: 20px; }
     .profile-head { display: flex; gap: 16px; align-items: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .profile-head img { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--soft); }
@@ -1403,6 +1664,9 @@ function publicStyles() {
       .post-card p { font-size: 0.9rem; }
       .section-head { align-items: flex-start; flex-direction: column; }
       .profile-head { align-items: flex-start; flex-direction: column; }
+      .article-meta-panel { align-items: flex-start; }
+      .article .dek { font-size: 1.07rem; }
+      .share-link { min-height: 36px; padding: 0 12px; font-size: 0.84rem; }
     }
   `;
 }
@@ -1598,7 +1862,7 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   const articleVideoUrl = extractArticleVideoUrl(article.content || '');
   const videoSchema = videoObjectJsonLd(article, canonicalUrl, articleVideoUrl);
   const imagePreload = image
-    ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 1080))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 700px) calc(100vw - 24px), 1080px" fetchpriority="high" />`
+    ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 960))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 780px) calc(100vw - 24px), 760px" fetchpriority="high" />`
     : '';
   const schemaObjects = [
     articleJsonLd(article, canonicalUrl),
@@ -1630,19 +1894,46 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   ${schemaObjects.map(jsonLdScript).join('\n  ')}`;
 }
 
-function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean } = {}) {
+function renderArticleShareButtons(canonicalUrl: string, title: string) {
+  const encodedUrl = encodeURIComponent(canonicalUrl);
+  const encodedTitle = encodeURIComponent(title);
+  const links = [
+    { label: 'WhatsApp', href: `https://wa.me/?text=${encodedTitle}%20${encodedUrl}` },
+    { label: 'Telegram', href: `https://t.me/share/url?url=${encodedUrl}&text=${encodedTitle}` },
+    { label: 'Facebook', href: `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}` },
+    { label: 'X', href: `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedTitle}` },
+  ];
+
+  return `<div class="share-strip" aria-label="Share this article">
+    <span class="share-label">Share</span>
+    ${links.map((item) => `<a class="share-link" href="${item.href}" target="_blank" rel="noopener noreferrer">${item.label}</a>`).join('')}
+  </div>`;
+}
+
+function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean; compactMeta?: boolean } = {}) {
   const eager = Boolean(options.eager);
+  const compactMeta = Boolean(options.compactMeta);
+  const displayContent = getDisplayArticleContent(article) || article.excerpt || article.title;
+  article.content = displayContent;
   const image = article.featured_image_url
     ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, eager ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 1099px) calc((100vw - 48px) / 2), 380px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${eager ? 'eager' : 'lazy'}" fetchpriority="${eager ? 'high' : 'auto'}" decoding="async" />`
     : '';
+  const summary = limitTextWords(article.excerpt || article.seo_description || '', 35);
+  const metaRow = compactMeta
+    ? `<div class="article-card-meta">
+        <span>${escapeHtml(article.author_name || 'Hindiline')}</span>
+        <span>${escapeHtml(formatRelativeTimeLabel(article.created_at || article.updated_at))}</span>
+        <span>${escapeHtml(`${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`)}</span>
+      </div>`
+    : `<div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>`;
 
   return `<a class="post-card" href="/${escapeHtml(article.slug)}">
     ${image}
     <div class="post-card-body">
       <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
       <h2>${escapeHtml(article.title)}</h2>
-      <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
-      <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
+      ${compactMeta ? '' : `<p>${escapeHtml(summary || 'Read the latest update on Hindiline.')}</p>`}
+      ${metaRow}
     </div>
   </a>`;
 }
@@ -1655,9 +1946,9 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
         <a class="spotlight-card" href="/${escapeHtml(featuredArticle.slug)}">
           <div class="spotlight-media">${featuredArticle.featured_image_url ? `<img src="${escapeHtml(optimizedImageUrl(featuredArticle.featured_image_url, 960, 72))}" srcset="${escapeHtml(featuredImageSrcset(featuredArticle.featured_image_url))}" sizes="(max-width: 859px) calc(100vw - 24px), 52vw" width="1080" height="608" alt="${escapeHtml(featuredArticle.featured_image_alt || featuredArticle.title)}" loading="eager" fetchpriority="high" decoding="async" />` : ''}</div>
           <div class="spotlight-copy">
-            <div class="meta-row"><span class="meta-pill">${escapeHtml(featuredArticle.category || 'Latest')}</span><span>${escapeHtml(formatDateLabel(featuredArticle.updated_at))}</span></div>
+            <div class="meta-row"><span class="meta-pill">${escapeHtml(featuredArticle.category || 'Latest')}</span><span>${escapeHtml(formatRelativeTimeLabel(featuredArticle.created_at || featuredArticle.updated_at))}</span></div>
             <h1>${escapeHtml(featuredArticle.title)}</h1>
-            <p>${escapeHtml(featuredArticle.excerpt || featuredArticle.seo_description || 'Read the latest update on Hindiline.')}</p>
+            <p>${escapeHtml(limitTextWords(featuredArticle.excerpt || featuredArticle.seo_description || 'Read the latest update on Hindiline.', 35))}</p>
           </div>
         </a>
       </section>`
@@ -1670,7 +1961,7 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
             <p>Latest published articles ek jagah, consistent reading experience ke saath.</p>
           </div>
         </div>
-        <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2 })).join('')}</div>
+        <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')}</div>
       </section>`
     : '';
   const empty = !featuredArticle
@@ -1795,15 +2086,23 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
   const preview = Boolean(options.preview);
   const categorySlug = options.categorySlug || null;
   const categories = options.categories || [];
+  const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
+  const displayContent = getDisplayArticleContent(article);
+  article.content = displayContent;
   const image = article.featured_image_url
-    ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 1080))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 700px) calc(100vw - 24px), 1080px" width="1360" height="765" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
+    ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 960))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 780px) calc(100vw - 24px), 760px" width="1080" height="608" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
   const breadcrumbTrail = article.category
     ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(categorySlug || slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a><span>/</span><span>${escapeHtml(article.title)}</span>`
     : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
-  const authorLine = article.author_name
-    ? `By <a href="/author/${escapeHtml(article.author_slug || slugify(article.author_name) || 'samoon-digital')}">${escapeHtml(article.author_name)}</a> &middot; `
-    : '';
+  const authorName = article.author_name || 'Hindiline';
+  const authorUrl = `/author/${escapeHtml(article.author_slug || slugify(authorName) || 'samoon-digital')}`;
+  const authorInitial = escapeHtml(authorName.slice(0, 1).toUpperCase() || 'H');
+  const authorAvatar = article.author_image_url
+    ? `<img class="article-author-avatar" src="${escapeHtml(optimizedImageUrl(article.author_image_url, 96, 72))}" width="48" height="48" alt="${escapeHtml(authorName)}" loading="lazy" decoding="async" />`
+    : `<span class="article-author-avatar">${authorInitial}</span>`;
+  const readTimeLabel = `${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`;
+  const shareButtons = renderArticleShareButtons(canonicalUrl, article.seo_title || article.title);
   const previewBanner = preview
     ? `<div class="preview-banner"><div class="wrap"><strong>Draft preview</strong><span>Public site par publish hone se pehle ka preview.</span></div></div>`
     : '';
@@ -1819,9 +2118,22 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
         <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
         <h1>${escapeHtml(article.title)}</h1>
         <p class="dek">${escapeHtml(article.excerpt || article.seo_description || '')}</p>
-        <div class="date byline">${authorLine}Updated ${escapeHtml(formatDateLabel(article.updated_at))}</div>
       </header>
       ${image}
+      <section class="article-meta-panel" aria-label="Article details">
+        <div class="article-author-block">
+          ${authorAvatar}
+          <div class="article-author-copy">
+            <span class="article-author-label">Author</span>
+            <a class="article-author-name" href="${authorUrl}">${escapeHtml(authorName)}</a>
+          </div>
+        </div>
+        <div class="article-facts">
+          <span>${escapeHtml(formatRelativeTimeLabel(article.created_at || article.updated_at))}</span>
+          <span>${escapeHtml(readTimeLabel)}</span>
+        </div>
+      </section>
+      ${shareButtons}
       <article class="content">${article.content}</article>
     </main>`,
     articleHeadExtras(article, preview, categorySlug),
@@ -3503,7 +3815,11 @@ app.patch('/api/articles/:id', async (c) => {
   }
 
   const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
+  content = normalizeArticleContent(content);
   content = applyArticleVideoSection(content, videoUrl, title);
+  if (isVacancyArticle(category, title)) {
+    content = compactVacancyArticleContent(content);
+  }
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
     .prepare(
@@ -3511,7 +3827,7 @@ app.patch('/api/articles/:id', async (c) => {
     )
     .bind(
       title,
-      normalizeText(body.excerpt) || makeExcerpt(content, title),
+      makeExcerpt(normalizeText(body.excerpt) || content, title),
       content,
       category,
       normalizeText(body.seoTitle) || null,
@@ -4027,7 +4343,13 @@ app.post('/api/articles/generate', async (c) => {
       });
     }
     content = injectInlineImagesIntoArticle(content, inlineImagesToRender);
+    if (controls.includeInternalLinks) {
+      content = ensureArticleInternalLinks(content, relatedArticles, category);
+    }
     content = applyArticleVideoSection(content, videoUrl, title);
+    if (isVacancyArticle(category, title)) {
+      content = compactVacancyArticleContent(content);
+    }
     const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
 
     await c.env.ADMIN_DB
@@ -4038,7 +4360,7 @@ app.post('/api/articles/generate', async (c) => {
         articleId,
         title,
         slug,
-        makeExcerpt(content, blogContent.meta_description || title),
+        makeExcerpt(blogContent.meta_description || content, title),
         content,
         category,
         blogContent.seo_title,

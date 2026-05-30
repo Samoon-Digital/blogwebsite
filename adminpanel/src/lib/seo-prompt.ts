@@ -92,6 +92,17 @@ export async function buildSeoPrompt(
     const imageDirection = context.imageDirection?.trim() || 'No extra image direction provided.';
     const inlineImageCount = Math.max(0, Math.min(4, context.inlineImageCount || 0));
     const tutorialVideoUrl = context.tutorialVideoUrl?.trim() || '';
+    const isVacancyArticle = /vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(category);
+    const vacancyArticleInstructions = isVacancyArticle
+        ? `## Vacancy Article Mode
+- This is a jobs/vacancy article, so keep it short, practical, and highly scannable.
+- Only include the main reader-useful sections: overview/highlights, important dates, post or vacancy details, eligibility, fees, age limit, selection process, how to apply, important links, and FAQs.
+- Do not add background explainers, history, generic career advice, motivational filler, trend commentary, or extra descriptive sections from your side.
+- Target roughly 450-750 words total for the article body, including FAQs.
+- Use at most 5 main H2 sections before the FAQ section.
+- Keep each section tight: 1 short paragraph and/or 2-5 bullets, or one small useful table only when it directly helps.
+- Do not include a table of contents for vacancy/job articles.`
+        : '';
 
     const systemPrompt = `
 # Blog Content Generation with SEO Optimization
@@ -143,6 +154,8 @@ ${imageDirection}
 ## Tutorial Video URL
 ${tutorialVideoUrl || 'No tutorial video provided.'}
 
+${vacancyArticleInstructions}
+
 ## SEO Requirements
 
 ### 1. Canonical Tags
@@ -186,14 +199,16 @@ Create 150-160 character description that:
 - Contains primary keyword
 - Has a clear call-to-action
 - Explains the main benefit
+- Starts with a crisp, human summary so its first 18-26 words can also work as the visible article description without feeling truncated
+- Avoid repetitive keyword stuffing or robotic phrasing in the opening line
 
 ### 6. H1, H2, H3 Structure
 ${config.h_structure || 'H1 → H2 → H3 hierarchy'}
 
 Structure:
 - **H1** (1 per page): Main blog title, contains primary keyword. The website renderer adds this from the article title, so do not include an <h1> tag inside the returned content body.
-- **H2** (2-3 sections): Main topics, subheadings with variations of keyword
-- **H3** (under each H2): Detailed subtopics, specific points
+- **H2** (${isVacancyArticle ? '3-5 sections only' : '2-3 sections'}): Main topics, subheadings with variations of keyword
+- **H3** (under each H2): ${isVacancyArticle ? 'Use sparingly only if a key detail must be split out' : 'Detailed subtopics, specific points'}
 
 Example for "Waiting List Kya Hai":
 - H1 → Waiting List Kya Hai
@@ -206,11 +221,12 @@ Example for "Waiting List Kya Hai":
 
 ### 7. First 100 Words (Most Important!)
 CRITICAL: First 100 words must:
-- Include primary keyword naturally (3-4 times)
+- Include primary keyword naturally (usually 1-2 times, only more if it still reads naturally)
 - Explain what the blog is about
 - Give reader reason to continue reading
 - Be engaging and clear
 - Set expectations for content
+- Keep the first paragraph concise and human because the opening summary may be reused as the article description/dek
 
 ### 8. FAQ Section (Powerful for SEO)
 ${controls.includeFaqs ? 'Include 4-5 FAQ questions relevant to the topic:' : 'Do not include FAQ questions for this article.'}
@@ -224,10 +240,10 @@ Q: Waiting ticket confirm kab hota hai?
 A: [Clear, detailed answer]
 
 ### 9. Table of Contents (for long articles)
-${controls.includeToc ? 'If article is > 1000 words:' : 'Do not include a table of contents.'}
-- Add "Table of Contents" section
-- Link to all H2 and H3 headings
-- Improves user experience and SEO
+${isVacancyArticle ? 'Do not include a table of contents for vacancy/job articles.' : controls.includeToc ? 'If article is > 1000 words:' : 'Do not include a table of contents.'}
+${isVacancyArticle ? '- Keep the article directly scannable without a TOC section' : '- Add "Table of Contents" section'}
+${isVacancyArticle ? '- Start with the key update and move straight into main details' : '- Link to all H2 and H3 headings'}
+${isVacancyArticle ? '- Avoid any extra layout filler before the useful sections' : '- Improves user experience and SEO'}
 
 ### 10. Readability Guidelines
 ${config.readability_rules || 'Keep paragraphs small and simple'}
@@ -248,6 +264,11 @@ ${controls.includeInternalLinks ? 'Add inline internal links to related articles
 - Improves crawlability and user engagement
 - Use actual href values from "Related Internal Articles Available" when relevant.
 - Add links inside paragraphs naturally, not only at the bottom.
+- If related articles are available, include at least 2 natural inline internal links in the body when possible.
+- Do not leave the article body without inline internal links when relevant related articles are provided.
+- Also end the article with a clear related-articles CTA block using this exact wrapper: <div class="internal-links"><h3>...</h3><p>...</p><ul>...</ul></div>
+- The CTA block should recommend 3-5 actually relevant related articles from the provided list.
+- Internal article links must use the exact provided slug paths like "/article-slug", never "/articles/article-slug".
 
 ### 11B. External Linking
 ${controls.includeExternalLinks ? `For vacancy, student, admit card, result, scholarship, exam, government scheme, and application topics:
@@ -294,7 +315,7 @@ Return ONLY valid JSON with this exact structure:
   "meta_description": "Meta description (150-160 chars)",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
-  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content...</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>Related Articles</h3><ul><li><a href=\"/articles/slug\">Article Title</a></li></ul></div>",
+  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>ऐसे ही जुड़े लेख</h3><p>Is topic se jude aur updates ke liye ye articles bhi padhein:</p><ul><li><a href=\"/article-slug\">Article Title</a></li></ul></div>",
   "inline_images": [
     {
       "prompt": "Prompt for a supporting in-article image",
@@ -308,7 +329,7 @@ Return ONLY valid JSON with this exact structure:
     "faq": { "type": "schema", "data": {} },
     "organization": { "type": "schema", "data": {} }
   },
-  "word_count": 1500,
+  "word_count": ${isVacancyArticle ? 650 : 1500},
   "keyword_density": "Primary keyword appears X times (Y% density)"
 }
 \`\`\`
@@ -318,6 +339,7 @@ Return ONLY valid JSON with this exact structure:
 ## Important Notes
 
 1. **Content Quality**: Write comprehensive, valuable blogs that answer user questions
+${isVacancyArticle ? '1B. **Vacancy Focus**: Keep vacancy articles concise and action-focused. Do not add extra explanatory filler beyond the core recruitment details and FAQs.' : ''}
 2. **Natural Writing**: Avoid keyword stuffing - maintain natural flow
 3. **SEO First**: Balance readability with SEO optimization
 4. **Hindi/English Mix**: Write in Hinglish for better Indian audience engagement
