@@ -198,6 +198,9 @@ const app = new Hono<{ Bindings: Bindings }>();
 const SESSION_COOKIE = 'samoondgital_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const PUBLIC_SITE_ORIGIN = 'https://hindiline.com';
+const PUBLIC_LOGO_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-320.png`;
+const PUBLIC_FAVICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-64.png`;
+const PUBLIC_APPLE_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
 
 function publicArticleUrl(slug: string) {
   return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
@@ -1305,34 +1308,55 @@ function navItem(href: string, label: string, active: boolean) {
 function publicStyles() {
   return `
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#121212; --muted:#4f4f4f; --border:#e1ddd6; --paper:#fff; --soft:#f8f7f4; --accent:#0b5f4d; }
+    :root { color-scheme: light; font-family: "Noto Sans Devanagari", "Hind", "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#101218; --muted:#59606d; --border:#dde2ea; --paper:#ffffff; --soft:#f5f7fb; --accent:#0a5b77; --nav:#2f343b; --nav-active:#d71921; --nav-highlight:#f1ad16; }
     html, body { min-height: 100%; background: var(--paper); color: var(--text); }
     a { color: inherit; text-decoration: none; }
     img { max-width: 100%; display: block; }
-    .site-header { border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.94); position: sticky; top: 0; z-index: 10; }
-    .wrap { width: min(1080px, calc(100% - 24px)); margin: 0 auto; }
-    .nav { min-height: 58px; padding: 12px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-    .brand { font-weight: 800; font-size: 1.05rem; letter-spacing: 0; }
-    .nav-links { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 0.9rem; }
-    .category-strip { display: flex; gap: 8px; flex-wrap: wrap; }
-    .category-chip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 7px 11px; font-size: 0.86rem; color: var(--muted); background: #fff; }
-    .category-chip:hover { color: var(--text); border-color: var(--accent); }
-    .hero { padding: 34px 0 24px; background: var(--soft); border-bottom: 1px solid var(--border); }
-    .hero h1 { font-size: clamp(2rem, 2rem + 1.8vw, 4rem); line-height: 1.04; letter-spacing: 0; max-width: 780px; }
-    .hero p { margin-top: 12px; color: var(--muted); line-height: 1.7; max-width: 640px; font-size: 1rem; }
-    .grid { padding: 20px 0 44px; display: grid; grid-template-columns: 1fr; gap: 14px; }
-    .post-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; display: grid; align-content: start; }
+    .site-header { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,0.97); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+    .wrap { width: min(1240px, calc(100% - 24px)); margin: 0 auto; }
+    .header-top { background: #fff; }
+    .header-top-inner { min-height: 110px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 26px; padding: 14px 0 12px; }
+    .brand-mark { display: inline-flex; align-items: center; flex-shrink: 0; }
+    .brand-logo { width: auto; height: 66px; object-fit: contain; }
+    .mobile-menu-anchor { display: none; }
+    .header-ad-slot { min-height: 88px; width: 100%; border-radius: 10px; background: transparent; }
+    .section-nav { background: var(--nav); color: #fff; border-top: 1px solid rgba(255,255,255,0.08); }
+    .nav-scroll { display: flex; align-items: stretch; gap: 0; overflow-x: auto; scrollbar-width: none; }
+    .nav-scroll::-webkit-scrollbar { display: none; }
+    .top-nav-link { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 16px; font-size: 0.96rem; font-weight: 600; white-space: nowrap; color: rgba(255,255,255,0.92); transition: background 0.16s ease, color 0.16s ease; }
+    .top-nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .top-nav-link.home-link { background: var(--nav-active); color: #fff; }
+    .top-nav-link.active { background: rgba(241, 173, 22, 0.18); color: #fff0bf; }
+    .home-summary { padding: 22px 0 8px; color: var(--muted); font-size: 0.95rem; line-height: 1.65; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .section-head h2 { font-size: clamp(1.3rem, 1.1rem + 0.4vw, 1.7rem); line-height: 1.2; letter-spacing: -0.01em; }
+    .section-head p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+    .home-spotlight { padding: 18px 0 10px; }
+    .spotlight-card { display: grid; gap: 0; background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%); border: 1px solid var(--border); border-radius: 20px; overflow: hidden; box-shadow: 0 18px 38px rgba(14, 24, 45, 0.08); }
+    .spotlight-media { background: #eaf0f8; }
+    .spotlight-media img { width: 100%; height: 100%; min-height: 260px; aspect-ratio: 16 / 9; object-fit: cover; }
+    .spotlight-copy { padding: 22px; display: grid; gap: 12px; align-content: center; }
+    .spotlight-copy h1 { font-size: clamp(1.7rem, 1.28rem + 1vw, 2.9rem); line-height: 1.2; letter-spacing: -0.02em; }
+    .spotlight-copy p { color: var(--muted); font-size: 1rem; line-height: 1.72; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+    .meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.84rem; }
+    .meta-pill { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: rgba(10, 91, 119, 0.08); color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+    .post-grid-section { padding: 18px 0 46px; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    .post-card { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: #fff; display: grid; align-content: start; box-shadow: 0 10px 26px rgba(14, 24, 45, 0.05); }
     .post-card img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
-    .post-card-body { padding: 14px; display: grid; gap: 9px; }
-    .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-    .post-card h2 { font-size: 1rem; line-height: 1.35; letter-spacing: 0; }
-    .post-card p { color: var(--muted); line-height: 1.6; font-size: 0.9rem; }
+    .post-card-body { padding: 16px 16px 18px; display: grid; gap: 10px; align-content: start; min-height: 100%; }
+    .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
+    .post-card h2 { font-size: 1.08rem; line-height: 1.48; letter-spacing: -0.01em; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .post-card p { color: var(--muted); line-height: 1.68; font-size: 0.92rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 4.7em; }
     .date { color: #5f6368; font-size: 0.82rem; }
     .byline a { color: var(--accent); font-weight: 600; }
     .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
-    .article { padding: 22px 0 52px; }
+    .hero { padding: 28px 0 18px; background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 100%); border-bottom: 1px solid var(--border); }
+    .hero h1 { font-size: clamp(1.6rem, 1.35rem + 1vw, 2.4rem); line-height: 1.2; letter-spacing: -0.02em; max-width: 820px; }
+    .hero p { margin-top: 10px; color: var(--muted); line-height: 1.72; max-width: 720px; font-size: 0.98rem; }
+    .article { padding: 26px 0 56px; }
     .article-head { display: grid; gap: 12px; padding-bottom: 18px; }
-    .article h1 { max-width: 900px; font-size: clamp(2rem, 2rem + 1vw, 3.25rem); line-height: 1.1; letter-spacing: 0; }
+    .article h1 { max-width: 900px; font-size: clamp(1.8rem, 1.5rem + 1vw, 3rem); line-height: 1.22; letter-spacing: -0.02em; word-break: break-word; }
     .article .dek { color: var(--muted); max-width: 760px; line-height: 1.7; font-size: 1rem; }
     .breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.84rem; }
     .breadcrumbs a { color: var(--accent); }
@@ -1360,14 +1384,58 @@ function publicStyles() {
     .profile-head h1 { font-size: clamp(1.75rem, 1.5rem + 1vw, 2.6rem); line-height: 1.1; }
     .profile-head p { color: var(--muted); line-height: 1.7; margin-top: 6px; max-width: 680px; }
     .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
-    @media (min-width: 700px) { .wrap { width: min(1080px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, 1fr); gap: 16px; padding-top: 28px; } .post-card-body { padding: 16px; } .post-card h2 { font-size: 1.05rem; } .article { padding-top: 34px; } }
-    @media (min-width: 980px) { .grid { grid-template-columns: repeat(3, 1fr); gap: 18px; } .hero { padding: 56px 0 34px; } .content { font-size: 1.03rem; } }
-    @media (max-width: 620px) { .nav { align-items: flex-start; flex-direction: column; } }
+    @media (min-width: 860px) { .spotlight-card { grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr); } .spotlight-media { order: 2; } .spotlight-copy { order: 1; padding: 28px; } }
+    @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
+    @media (min-width: 1100px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
+    @media (max-width: 820px) {
+      .header-top-inner { grid-template-columns: auto 1fr; min-height: 72px; gap: 12px; padding: 10px 0; }
+      .mobile-menu-anchor { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; color: var(--text); font-size: 1.28rem; }
+      .brand-logo { height: 42px; }
+      .header-ad-slot { display: none; }
+      .top-nav-link { min-height: 42px; padding: 0 14px; font-size: 0.92rem; }
+      .hero { padding: 20px 0 14px; }
+      .spotlight-copy { padding: 18px; }
+    }
+    @media (max-width: 620px) {
+      .wrap { width: min(1240px, calc(100% - 18px)); }
+      .post-card-body { padding: 14px 14px 16px; }
+      .post-card h2 { font-size: 1rem; line-height: 1.5; }
+      .post-card p { font-size: 0.9rem; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .profile-head { align-items: flex-start; flex-direction: column; }
+    }
   `;
 }
 
-function publicShell(title: string, description: string, content: string, headExtras = '') {
+type PublicShellOptions = {
+  categories?: CategoryRow[];
+  activeCategorySlug?: string | null;
+  isHome?: boolean;
+};
+
+function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlug?: string | null; isHome?: boolean } = {}) {
+  if (!categories.length) {
+    return '';
+  }
+
+  const activeCategorySlug = options.activeCategorySlug || '';
+  const homeClass = options.isHome ? ' active' : '';
+  const links = categories
+    .map((category) => {
+      const activeClass = category.slug === activeCategorySlug ? ' active' : '';
+      return `<a class="top-nav-link${activeClass}" href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`;
+    })
+    .join('');
+
+  return `<nav class="section-nav" aria-label="Primary categories"><div class="wrap nav-scroll" id="top-nav"><a class="top-nav-link home-link${homeClass}" href="/">होम</a>${links}</div></nav>`;
+}
+
+function publicShell(title: string, description: string, content: string, headExtras = '', options: PublicShellOptions = {}) {
   const baseSchemas = [organizationJsonLd(), websiteJsonLd()].map(jsonLdScript).join('\n  ');
+  const navMarkup = renderPublicNav(options.categories || [], {
+    activeCategorySlug: options.activeCategorySlug,
+    isHome: options.isHome,
+  });
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1375,19 +1443,24 @@ function publicShell(title: string, description: string, content: string, headEx
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
+  <link rel="icon" type="image/png" sizes="64x64" href="${escapeHtml(PUBLIC_FAVICON_URL)}" />
+  <link rel="apple-touch-icon" href="${escapeHtml(PUBLIC_APPLE_ICON_URL)}" />
   ${headExtras}
   ${baseSchemas}
   <style>${publicStyles()}</style>
 </head>
 <body>
   <header class="site-header">
-    <div class="wrap nav">
-      <a class="brand" href="/">Hindiline</a>
-      <nav class="nav-links">
-        <a href="/">Latest</a>
-        <a href="https://admin.hindiline.com">Admin</a>
-      </nav>
+    <div class="header-top">
+      <div class="wrap header-top-inner">
+        <a class="mobile-menu-anchor" href="#top-nav" aria-label="Categories">☰</a>
+        <a class="brand-mark" href="/" aria-label="Hindiline home">
+          <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
+        </a>
+        <div class="header-ad-slot" aria-hidden="true"></div>
+      </div>
     </div>
+    ${navMarkup}
   </header>
   ${content}
   <footer class="site-footer"><div class="wrap">Hindiline &copy; ${new Date().getFullYear()}</div></footer>
@@ -1433,7 +1506,10 @@ function organizationJsonLd() {
     '@type': 'Organization',
     name: 'Hindiline',
     url: PUBLIC_SITE_ORIGIN,
-    logo: `${PUBLIC_SITE_ORIGIN}/favicon.ico`,
+    logo: {
+      '@type': 'ImageObject',
+      url: PUBLIC_LOGO_URL,
+    },
   };
 }
 
@@ -1554,56 +1630,67 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   ${schemaObjects.map(jsonLdScript).join('\n  ')}`;
 }
 
-function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
-  const categoryLinks = categories.length
-    ? `<section class="wrap" style="padding:16px 0 0;"><div class="category-strip">${categories
-      .map((category) => `<a class="category-chip" href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`)
-      .join('')}</div></section>`
+function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean } = {}) {
+  const eager = Boolean(options.eager);
+  const image = article.featured_image_url
+    ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, eager ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 1099px) calc((100vw - 48px) / 2), 380px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${eager ? 'eager' : 'lazy'}" fetchpriority="${eager ? 'high' : 'auto'}" decoding="async" />`
     : '';
-  const cards = articles.length
-    ? `<section class="wrap grid">${articles
-      .map((article, index) => {
-        const image = article.featured_image_url
-          ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 979px) calc((100vw - 48px) / 2), 348px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
-          : '';
-        return `<a class="post-card" href="/${escapeHtml(article.slug)}">
-          ${image}
-          <div class="post-card-body">
-            <div class="kicker">${article.category ? `<span>${escapeHtml(article.category)}</span>` : 'Latest'}</div>
-            <h2>${escapeHtml(article.title)}</h2>
-            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
-            <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
+
+  return `<a class="post-card" href="/${escapeHtml(article.slug)}">
+    ${image}
+    <div class="post-card-body">
+      <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
+      <h2>${escapeHtml(article.title)}</h2>
+      <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
+      <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
+    </div>
+  </a>`;
+}
+
+function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
+  const [featuredArticle, ...recentArticles] = articles;
+  const spotlight = featuredArticle
+    ? `<section class="wrap home-summary">Hindi mein latest updates, explainers aur practical guides. Seedha useful information, clean layout ke saath.</section>
+      <section class="wrap home-spotlight">
+        <a class="spotlight-card" href="/${escapeHtml(featuredArticle.slug)}">
+          <div class="spotlight-media">${featuredArticle.featured_image_url ? `<img src="${escapeHtml(optimizedImageUrl(featuredArticle.featured_image_url, 960, 72))}" srcset="${escapeHtml(featuredImageSrcset(featuredArticle.featured_image_url))}" sizes="(max-width: 859px) calc(100vw - 24px), 52vw" width="1080" height="608" alt="${escapeHtml(featuredArticle.featured_image_alt || featuredArticle.title)}" loading="eager" fetchpriority="high" decoding="async" />` : ''}</div>
+          <div class="spotlight-copy">
+            <div class="meta-row"><span class="meta-pill">${escapeHtml(featuredArticle.category || 'Latest')}</span><span>${escapeHtml(formatDateLabel(featuredArticle.updated_at))}</span></div>
+            <h1>${escapeHtml(featuredArticle.title)}</h1>
+            <p>${escapeHtml(featuredArticle.excerpt || featuredArticle.seo_description || 'Read the latest update on Hindiline.')}</p>
           </div>
-        </a>`;
-      })
-      .join('')}</section>`
-    : `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`;
+        </a>
+      </section>`
+    : '';
+  const recent = recentArticles.length
+    ? `<section class="wrap post-grid-section">
+        <div class="section-head">
+          <div>
+            <h2>हाल में जोड़े गए लेख</h2>
+            <p>Latest published articles ek jagah, consistent reading experience ke saath.</p>
+          </div>
+        </div>
+        <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2 })).join('')}</div>
+      </section>`
+    : '';
+  const empty = !featuredArticle
+    ? `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`
+    : '';
 
   return publicShell(
     'Hindiline - Latest Blogs and Updates',
     'Hindiline par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
-    `<section class="hero"><div class="wrap"><h1>Latest useful updates, explained simply.</h1><p>Jobs, government notifications, education, finance, technology aur daily-life guides ko Hinglish mein clear format mein padhein.</p></div></section>${categoryLinks}${cards}`,
+    `${spotlight}${recent}${empty}`,
+    '',
+    { categories, isHome: true },
   );
 }
 
 function articleCardsList(articles: PublicArticleRow[]) {
   return articles.length
-    ? `<section class="wrap grid">${articles
-      .map((article, index) => {
-        const image = article.featured_image_url
-          ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 979px) calc((100vw - 48px) / 2), 348px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
-          : '';
-        return `<a class="post-card" href="/${escapeHtml(article.slug)}">
-          ${image}
-          <div class="post-card-body">
-            <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
-            <h2>${escapeHtml(article.title)}</h2>
-            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
-            <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
-          </div>
-        </a>`;
-      })
-      .join('')}</section>`
+    ? `<section class="wrap post-grid-section"><div class="grid">${articles
+      .map((article, index) => renderPublicPostCard(article, { eager: index < 2 }))
+      .join('')}</div></section>`
     : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
 }
 
@@ -1658,7 +1745,7 @@ function categoryBreadcrumbJsonLd(category: CategoryRow) {
   };
 }
 
-function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[]) {
+function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
   const title = `${category.name} Articles - Hindiline`;
   const description = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
   return publicShell(
@@ -1668,10 +1755,11 @@ function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[])
     `<link rel="canonical" href="${escapeHtml(publicCategoryUrl(category.slug))}" />
   ${jsonLdScript(categoryPageJsonLd(category, articles))}
   ${jsonLdScript(categoryBreadcrumbJsonLd(category))}`,
+    { categories, activeCategorySlug: category.slug },
   );
 }
 
-function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[]) {
+function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
   const title = `${author.name} - Author at Hindiline`;
   const description = author.bio || `${author.name} ke latest articles aur updates Hindiline par padhein.`;
   const image = author.image_url
@@ -1699,12 +1787,14 @@ function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[]) {
       url: publicAuthorUrl(author.slug),
       mainEntity: personJsonLd(author),
     })}`,
+    { categories },
   );
 }
 
-function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean; categorySlug?: string | null } = {}) {
+function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean; categorySlug?: string | null; categories?: CategoryRow[] } = {}) {
   const preview = Boolean(options.preview);
   const categorySlug = options.categorySlug || null;
+  const categories = options.categories || [];
   const image = article.featured_image_url
     ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 1080))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 700px) calc(100vw - 24px), 1080px" width="1360" height="765" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
@@ -1735,6 +1825,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
       <article class="content">${article.content}</article>
     </main>`,
     articleHeadExtras(article, preview, categorySlug),
+    { categories, activeCategorySlug: categorySlug },
   );
 }
 
@@ -1743,6 +1834,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
 
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     return c.text('Not found', 404);
+  }
+
+  if (url.pathname === '/favicon.ico') {
+    return c.redirect(PUBLIC_FAVICON_URL, 302);
   }
 
   if (url.pathname === '/' || url.pathname === '') {
@@ -1756,6 +1851,8 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     return servePublicAsset(c, key);
   }
 
+  const categories = await readCategories(c.env.ADMIN_DB);
+
   if (url.pathname.startsWith('/category/')) {
     const categorySlug = decodeURIComponent(url.pathname.slice('/category/'.length).replace(/^\/+|\/+$/g, ''));
     if (!categorySlug || categorySlug.includes('/')) {
@@ -1763,10 +1860,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const category = await readCategoryBySlug(c.env.ADMIN_DB, categorySlug);
     if (!category) {
-      return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+      return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>', '', { categories }), 404);
     }
     const articles = await readPublishedArticlesByCategory(c.env.ADMIN_DB, category.name);
-    return c.html(publicCategoryPage(category, articles));
+    return c.html(publicCategoryPage(category, articles, categories));
   }
 
   if (url.pathname.startsWith('/author/')) {
@@ -1776,10 +1873,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const author = await readAuthorBySlug(c.env.ADMIN_DB, authorSlug);
     if (!author) {
-      return c.html(publicShell('Author not found - Hindiline', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+      return c.html(publicShell('Author not found - Hindiline', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>', '', { categories }), 404);
     }
     const articles = await readPublishedArticlesByAuthor(c.env.ADMIN_DB, author.id);
-    return c.html(publicAuthorPage(author, articles));
+    return c.html(publicAuthorPage(author, articles, categories));
   }
 
   const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''));
@@ -1794,13 +1891,15 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
         'Article not found - Hindiline',
         'The requested article could not be found.',
         '<main class="wrap empty">Article nahi mila. <a href="/">Latest blogs</a> dekhein.</main>',
+        '',
+        { categories },
       ),
       404,
     );
   }
 
   const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
-  return c.html(publicArticlePage(article, { categorySlug: category?.slug || null }));
+  return c.html(publicArticlePage(article, { categorySlug: category?.slug || null, categories }));
 }
 
 function loginPage(error = '') {
@@ -3241,6 +3340,7 @@ app.get('/articles/:id/preview', async (c) => {
   }
 
   const article = await readArticleById(c.env.ADMIN_DB, c.req.param('id'));
+  const categories = await readCategories(c.env.ADMIN_DB);
   if (!article) {
     return c.html(
       publicShell(
@@ -3248,13 +3348,14 @@ app.get('/articles/:id/preview', async (c) => {
         'The requested draft preview could not be found.',
         '<main class="wrap empty">Draft preview nahi mila. <a href="/articles">Articles</a> par wapas jayen.</main>',
         '<meta name="robots" content="noindex,nofollow" />',
+        { categories },
       ),
       404,
     );
   }
 
   const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
-  return c.html(publicArticlePage(article, { preview: article.status !== 'published', categorySlug: category?.slug || null }));
+  return c.html(publicArticlePage(article, { preview: article.status !== 'published', categorySlug: category?.slug || null, categories }));
 });
 
 app.get('/articles/:id/edit', async (c) => {
