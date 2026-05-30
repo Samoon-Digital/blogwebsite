@@ -19,9 +19,16 @@ export interface GeneratedBlogContent {
     featured_image_prompt: string;
     featured_image_alt: string;
     content: string;
+    inline_images?: InlineImagePlan[];
     schema_markup: Record<string, unknown>;
     word_count: number;
     keyword_density: string;
+}
+
+export interface InlineImagePlan {
+    prompt: string;
+    alt: string;
+    caption: string;
 }
 
 export interface GeneratedImage {
@@ -263,6 +270,29 @@ class OpenAIClient {
         return this.extractResponsesText(await response.json(), 'OpenAI');
     }
 
+    private normalizeInlineImages(value: unknown): InlineImagePlan[] {
+        if (!Array.isArray(value)) {
+            return [];
+        }
+
+        return value
+            .map((item) => {
+                const record = item as Record<string, unknown>;
+                const prompt = this.scalarText(record?.prompt, '');
+                const alt = this.scalarText(record?.alt, '');
+                const caption = this.scalarText(record?.caption, '');
+                if (!prompt) {
+                    return null;
+                }
+                return {
+                    prompt,
+                    alt,
+                    caption,
+                };
+            })
+            .filter((item): item is InlineImagePlan => Boolean(item));
+    }
+
     async generateBlogContent(
         systemPrompt: string,
         title: string,
@@ -288,6 +318,7 @@ class OpenAIClient {
             featured_image_prompt: parsed.featured_image_prompt,
             featured_image_alt: parsed.featured_image_alt || title,
             content: parsed.content,
+            inline_images: this.normalizeInlineImages((parsed as unknown as Record<string, unknown>).inline_images),
             schema_markup: parsed.schema_markup || {},
             word_count: Number(parsed.word_count) || 0,
             keyword_density: parsed.keyword_density || '',
@@ -296,8 +327,8 @@ class OpenAIClient {
 
     async createHeadlineFromTitle(rawTitle: string, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
-            'You are an Indian Hindi/Hinglish news editor for Hindiline. Rewrite rough user-provided topics into short, catchy, SEO-safe Hindi headlines. Do not copy the raw title as-is. Think of 3 headline options internally, then return only the strongest one. Make it feel publishable by surfacing the key update, benefit, audience, timeline, warning, or reason-to-care when relevant. Keep it factual, not cheap clickbait, and do not use punctuation spam. Return JSON with keys: blog_title, category, reason.',
-            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nSaved headline style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article. News titles should feel strong enough to win clicks without sounding fake.`,
+            'You are an Indian Hindi/Hinglish news editor for Hindiline. Rewrite rough user-provided topics into strong, SEO-aware Hindi/Hinglish headlines. Do not copy the raw title as-is. Think of 3 headline options internally, then return only the strongest one. Aim for a medium-length publishable headline, usually around 8-14 words or roughly 55-85 characters when natural. Surface the key update, benefit, audience, timeline, warning, or reason-to-care when relevant. Keep it factual, not cheap clickbait, and do not use punctuation spam. Return JSON with keys: blog_title, category, reason.',
+            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nSaved headline style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article. News titles should feel strong enough to win clicks without sounding fake, and SEO-strong enough to stand on their own.`,
             900,
         );
         const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI headline brief');
@@ -309,7 +340,7 @@ class OpenAIClient {
 
     async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
-            'You are an Indian news editor for Hindiline. Read the source content and create the best Hindi/Hinglish article brief for our website. The headline must feel newsroom-sharp and publication-ready, not bland. Think of 3 headline options internally and choose the strongest factual one. Use the most important update, audience impact, timeline, amount, result, or action point to make the title compelling without becoming clickbait. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
+            'You are an Indian news editor for Hindiline. Read the source content and create the best Hindi/Hinglish article brief for our website. The headline must feel newsroom-sharp and publication-ready, not bland. Think of 3 headline options internally and choose the strongest factual one. Aim for a medium-length SEO-capable headline, usually around 8-14 words or roughly 55-85 characters when natural. Use the most important update, audience impact, timeline, amount, result, or action point to make the title compelling without becoming clickbait. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
             `Category hint: ${categoryHint || 'News'}\nSaved headline style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
             1200,
         );
@@ -415,13 +446,17 @@ class OpenAIClient {
         };
     }
 
-    async generateFeaturedImage(prompt: string, title: string, altText?: string): Promise<GeneratedImage> {
-        const imagePrompt = `
-Create a professional, engaging featured image for a blog post titled: "${title}"
-
-${prompt}
-
-Requirements:
+    async generateFeaturedImage(prompt: string, title: string, altText?: string, variant: 'featured' | 'inline' = 'featured'): Promise<GeneratedImage> {
+        const variantRequirements = variant === 'inline'
+            ? `Requirements:
+- Professional editorial image suitable inside a long-form article
+- Clear visual explanation of the section topic
+- Natural composition with useful detail, not a hero-banner look
+- No text overlays on image
+- 16:9 aspect ratio for responsive web content
+- Clean composition, realistic details, and low visual noise
+- Strong enough for mobile, but optimized as an in-article supporting image`
+            : `Requirements:
 - Professional quality suitable for blog headers
 - Bright, engaging colors that stand out
 - Clear, readable even as a thumbnail
@@ -429,7 +464,13 @@ Requirements:
 - No text overlays on image
 - 16:9 aspect ratio (ideal for web)
 - Clean editorial composition with one clear subject, low visual noise, sharp edges, and uncluttered background
-- Google Discover-friendly large image composition, safe at 1200px+ wide and strong on mobile crops
+- Google Discover-friendly large image composition, safe at 1200px+ wide and strong on mobile crops`;
+        const imagePrompt = `
+Create a professional, engaging featured image for a blog post titled: "${title}"
+
+${prompt}
+
+${variantRequirements}
 `;
 
         const response = await fetch(`${this.baseUrl}/images/generations`, {

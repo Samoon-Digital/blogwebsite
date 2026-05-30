@@ -36,6 +36,10 @@ export type SeoPromptContext = {
     controls?: SeoPromptControls;
     trainingStyles?: TrainingStyleSet;
     relatedArticles?: Array<{ title: string; slug: string; category?: string | null }>;
+    writerInstructions?: string;
+    imageDirection?: string;
+    inlineImageCount?: number;
+    tutorialVideoUrl?: string;
 };
 
 export async function buildSeoPrompt(
@@ -84,6 +88,10 @@ export async function buildSeoPrompt(
     const relatedArticles = context.relatedArticles?.length
         ? context.relatedArticles.map((article) => `- ${article.title}: /${article.slug}`).join('\n')
         : 'No related internal articles available.';
+    const writerInstructions = context.writerInstructions?.trim() || 'No extra writing instructions provided.';
+    const imageDirection = context.imageDirection?.trim() || 'No extra image direction provided.';
+    const inlineImageCount = Math.max(0, Math.min(4, context.inlineImageCount || 0));
+    const tutorialVideoUrl = context.tutorialVideoUrl?.trim() || '';
 
     const systemPrompt = `
 # Blog Content Generation with SEO Optimization
@@ -94,7 +102,7 @@ Editorial focus:
 - Prefer news-style explainers: what happened, why it matters, who is affected, key facts, timeline, next steps.
 - Keep the tone clear, useful, trustworthy and engaging without clickbait.
 - When the topic is not breaking news, write it as a practical blog guide with a current-news angle where natural.
-- Treat the user title as a rough topic. Always create a short, catchy Hindi/Hinglish headline instead of copying rough wording exactly.
+- Treat the user title as a rough topic. Always create a strong, SEO-aware Hindi/Hinglish headline instead of copying rough wording exactly.
 
 ## Blog Title
 "${blogTitle}"
@@ -112,6 +120,7 @@ Editorial focus:
 - Article Training Style: ${controls.useTrainingArticleStyle ? 'ON - follow saved article/body style notes below.' : 'OFF - ignore saved article/body style notes.'}
 - Featured Image Training Style: ${controls.useTrainingImageStyle ? 'ON - follow saved featured image notes below.' : 'OFF - ignore saved featured image notes.'}
 - News Angle: ${controls.newsAngle ? 'ON - write with a current news/explainer angle.' : 'OFF - write as an evergreen practical guide.'}
+- Inline Section Images: ${inlineImageCount > 0 ? `ON - plan ${inlineImageCount} supporting in-article images aligned with major sections.` : 'OFF - do not plan supporting in-article images.'}
 
 ## Saved Headline Training Notes
 ${titleTrainingNotes}
@@ -124,6 +133,15 @@ ${imageTrainingNotes}
 
 ## Related Internal Articles Available
 ${relatedArticles}
+
+## Custom Writer Instructions
+${writerInstructions}
+
+## Image Direction
+${imageDirection}
+
+## Tutorial Video URL
+${tutorialVideoUrl || 'No tutorial video provided.'}
 
 ## SEO Requirements
 
@@ -161,6 +179,7 @@ Headline rules:
 - The final headline should feel sharper than the raw topic by surfacing the key update, benefit, warning, date, audience, or next step.
 - Prefer patterns like: topic + big update, topic + what changed, topic + who is affected, topic + deadline/timeline, or topic + practical payoff.
 - Stay factual and clean. Avoid fake suspense, all-caps, emoji, or punctuation spam.
+- Prefer a strong medium-length headline instead of an ultra-short one. Usually target 8-14 words when natural.
 
 ### 5. Meta Description
 Create 150-160 character description that:
@@ -249,6 +268,19 @@ Guidelines:
 - Size: Google Discover-friendly large image, at least 1200px wide, 16:9 crop-safe composition
 - ALT text: Include primary keyword, descriptive (50-125 chars)
 - Apply "Saved Featured Image Training Notes" directly inside featured_image_prompt when they are available.
+- Respect "Image Direction" for both featured and inline image ideas when provided.
+
+### 12B. Optional Inline Images Inside Article
+${inlineImageCount > 0 ? `Plan exactly ${inlineImageCount} supporting in-article images.` : 'Do not plan any inline images.'}
+- Each inline image should support a specific section, example, workflow, job role, comparison, or real-world scenario from the article.
+- Prompts must be visually specific, useful, editorial, and safe for a Hindi news/blog website.
+- Do not mention prompt text inside article content.
+- Inline image prompts should complement the article, not repeat the featured image.
+
+### 12C. Tutorial Video
+${tutorialVideoUrl ? 'A tutorial video URL is provided and the website will embed it automatically at the very end of the article.' : 'No tutorial video will be embedded.'}
+- If a tutorial video URL is provided, add a short natural lead-in sentence near the close of the article so the ending transitions well into the video section.
+- Do not output iframe/embed code for the video. Backend will place the video block automatically.
 
 ---
 
@@ -258,11 +290,18 @@ Return ONLY valid JSON with this exact structure:
 
 \`\`\`json
 {
-  "seo_title": "Title optimized for search (50-60 chars)",
+  "seo_title": "Title optimized for search (roughly 55-72 chars, strong and readable)",
   "meta_description": "Meta description (150-160 chars)",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
   "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content...</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>Related Articles</h3><ul><li><a href=\"/articles/slug\">Article Title</a></li></ul></div>",
+  "inline_images": [
+    {
+      "prompt": "Prompt for a supporting in-article image",
+      "alt": "ALT text for that supporting image",
+      "caption": "Short caption in Hindi/Hinglish"
+    }
+  ],
   "schema_markup": {
     "article": { "type": "schema", "data": {} },
     "breadcrumb": { "type": "schema", "data": {} },
@@ -289,6 +328,7 @@ Return ONLY valid JSON with this exact structure:
 9. **Links**: Use valid <a href="..."> anchors. Internal links should point to site slugs like "/slug"; external links must use target="_blank" rel="noopener noreferrer".
 10. **No Source Disclosure**: Never include "Reporting Source", "Source", source website name, source page title labels, or any note saying the article was created from another website.
 11. **Training Fidelity**: When saved training notes are ON, apply them only to the matching layer: headline notes for title tone, article notes for body structure/voice, and image notes for featured image prompt direction.
+12. **Inline Images Array**: Return exactly ${inlineImageCount} inline_images items when Inline Section Images is ON, otherwise return an empty array.
 
 Generate a high-quality, SEO-optimized blog post now.
 `;

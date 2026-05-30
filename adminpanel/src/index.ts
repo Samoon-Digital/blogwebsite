@@ -245,6 +245,12 @@ function cardImageSrcset(url: string) {
     .join(', ');
 }
 
+function contentImageSrcset(url: string) {
+  return [480, 720, 960]
+    .map((width) => `${optimizedImageUrl(url, width, 72)} ${width}w`)
+    .join(', ');
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll('&', '&amp;')
@@ -272,6 +278,14 @@ function slugify(value: string) {
 
 function buildSlug(title: string, fallbackId: string) {
   return slugify(title) || `article-${fallbackId.slice(0, 8)}`;
+}
+
+function clampInlineImageCount(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(4, Math.floor(parsed)));
 }
 
 function stripHtml(value: string) {
@@ -407,6 +421,108 @@ function normalizeArticleContent(content: string) {
     .replace(/^\s*```(?:html)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
+}
+
+function extractYouTubeVideoId(value: string) {
+  const input = normalizeText(value);
+  if (!input) {
+    return '';
+  }
+
+  try {
+    const url = new URL(input);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+
+    if (host === 'youtu.be') {
+      const id = url.pathname.split('/').filter(Boolean)[0] || '';
+      return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : '';
+    }
+
+    if (host === 'youtube.com' || host === 'm.youtube.com' || host.endsWith('.youtube.com')) {
+      const watchId = url.searchParams.get('v') || '';
+      if (/^[A-Za-z0-9_-]{11}$/.test(watchId)) {
+        return watchId;
+      }
+
+      const parts = url.pathname.split('/').filter(Boolean);
+      const knownIndex = parts.findIndex((part) => ['embed', 'shorts', 'live', 'v'].includes(part.toLowerCase()));
+      if (knownIndex >= 0) {
+        const id = parts[knownIndex + 1] || '';
+        return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : '';
+      }
+    }
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+function buildYouTubeWatchUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+}
+
+function buildYouTubeEmbedUrl(videoId: string) {
+  return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
+}
+
+function buildYouTubeThumbnailUrl(videoId: string) {
+  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/maxresdefault.jpg`;
+}
+
+function normalizeYouTubeUrl(value: string) {
+  const videoId = extractYouTubeVideoId(value);
+  return videoId ? buildYouTubeWatchUrl(videoId) : '';
+}
+
+function stripArticleVideoSection(content: string) {
+  return content
+    .replace(/\s*<!--ARTICLE_VIDEO_START-->[\s\S]*?<!--ARTICLE_VIDEO_END-->\s*/gi, '\n')
+    .trim();
+}
+
+function extractArticleVideoUrl(content: string) {
+  const markerMatch = content.match(/data-youtube-url="([^"]+)"/i);
+  if (markerMatch?.[1]) {
+    return normalizeYouTubeUrl(markerMatch[1]);
+  }
+
+  const iframeMatch = content.match(/<iframe[^>]+src="https:\/\/www\.youtube\.com\/embed\/([A-Za-z0-9_-]{11})[^"]*"/i);
+  if (iframeMatch?.[1]) {
+    return buildYouTubeWatchUrl(iframeMatch[1]);
+  }
+
+  return '';
+}
+
+function renderArticleVideoSection(videoUrl: string, title: string) {
+  const normalizedVideoUrl = normalizeYouTubeUrl(videoUrl);
+  const videoId = extractYouTubeVideoId(normalizedVideoUrl);
+  if (!videoId) {
+    return '';
+  }
+
+  const embedUrl = buildYouTubeEmbedUrl(videoId);
+  return `
+<!--ARTICLE_VIDEO_START-->
+<section class="article-video" data-youtube-url="${escapeHtml(normalizedVideoUrl)}">
+  <h2>Video Guide</h2>
+  <p>Agar aap is topic ko tutorial format me samajhna chahte hain to neeche video dekhein.</p>
+  <div class="video-frame">
+    <iframe src="${escapeHtml(embedUrl)}" title="${escapeHtml(title)} video guide" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+  </div>
+  <p><a href="${escapeHtml(normalizedVideoUrl)}" target="_blank" rel="noopener noreferrer">YouTube par video kholen</a></p>
+</section>
+<!--ARTICLE_VIDEO_END-->`.trim();
+}
+
+function applyArticleVideoSection(content: string, videoUrl: string, title: string) {
+  const cleanContent = stripArticleVideoSection(content);
+  const section = renderArticleVideoSection(videoUrl, title);
+  if (!section) {
+    return cleanContent;
+  }
+  return `${cleanContent}\n\n${section}`.trim();
 }
 
 async function fetchReadablePageText(sourceUrl: string) {
@@ -571,6 +687,84 @@ async function uploadFeaturedImage(
     objectKey,
     publicUrl: optimizedImageUrl(sourceUrl, 1200, 72),
   };
+}
+
+async function uploadInlineImage(
+  c: Context<{ Bindings: Bindings }>,
+  image: GeneratedImage,
+  articleId: string,
+  slug: string,
+  index: number,
+) {
+  if (!c.env.ARTICLE_IMAGES) {
+    throw new Error('R2 bucket binding ARTICLE_IMAGES is not configured');
+  }
+
+  const objectKey = `inline-images/${slug}-${articleId}-${index + 1}.${image.extension}`;
+  const sourceUrl = publicAssetUrl(c, objectKey);
+  await c.env.ARTICLE_IMAGES.put(objectKey, image.bytes, {
+    httpMetadata: {
+      contentType: image.contentType,
+      cacheControl: 'public, max-age=31536000, immutable',
+    },
+    customMetadata: {
+      articleId,
+      altText: image.altText,
+      provider: 'openai-inline',
+      sequence: String(index + 1),
+    },
+  });
+
+  return {
+    objectKey,
+    publicUrl: optimizedImageUrl(sourceUrl, 1200, 72),
+  };
+}
+
+function renderInlineImageFigure(imageUrl: string, altText: string, caption: string) {
+  const safeAlt = escapeHtml(altText);
+  const safeCaption = escapeHtml(caption);
+  return `<figure class="inline-image"><img src="${escapeHtml(optimizedImageUrl(imageUrl, 960, 72))}" srcset="${escapeHtml(contentImageSrcset(imageUrl))}" sizes="(max-width: 700px) calc(100vw - 24px), 760px" width="960" height="540" alt="${safeAlt}" loading="lazy" decoding="async" />${safeCaption ? `<figcaption>${safeCaption}</figcaption>` : ''}</figure>`;
+}
+
+function injectInlineImagesIntoArticle(
+  content: string,
+  images: Array<{ url: string; alt: string; caption: string }>,
+) {
+  if (!images.length) {
+    return content;
+  }
+
+  const h2Regex = /<h2\b[^>]*>[\s\S]*?<\/h2>/gi;
+  const matches = Array.from(content.matchAll(h2Regex));
+  if (!matches.length) {
+    return `${content}${images.map((image) => renderInlineImageFigure(image.url, image.alt, image.caption)).join('')}`;
+  }
+
+  let result = '';
+  let cursor = 0;
+  let imageIndex = 0;
+  for (const match of matches) {
+    const matchText = match[0];
+    const start = match.index || 0;
+    const end = start + matchText.length;
+    result += content.slice(cursor, end);
+    if (imageIndex < images.length) {
+      const image = images[imageIndex];
+      result += renderInlineImageFigure(image.url, image.alt, image.caption);
+      imageIndex += 1;
+    }
+    cursor = end;
+  }
+
+  result += content.slice(cursor);
+  if (imageIndex < images.length) {
+    result += images
+      .slice(imageIndex)
+      .map((image) => renderInlineImageFigure(image.url, image.alt, image.caption))
+      .join('');
+  }
+  return result;
 }
 
 async function uploadAuthorImage(c: Context<{ Bindings: Bindings }>, file: File, authorId: string, slug: string) {
@@ -832,6 +1026,13 @@ async function readCategoryBySlug(db: D1Database, slug: string) {
   return db
     .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE slug = ? LIMIT 1')
     .bind(slug)
+    .first<CategoryRow>();
+}
+
+async function readCategoryByName(db: D1Database, name: string) {
+  return db
+    .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE name = ? LIMIT 1')
+    .bind(name)
     .first<CategoryRow>();
 }
 
@@ -1146,6 +1347,13 @@ function publicStyles() {
     .content table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
     .content td, .content th { border: 1px solid var(--border); padding: 9px; text-align: left; }
     .content a { color: var(--accent); text-decoration: underline; }
+    .content figure.inline-image { margin: 1.2em 0 1.4em; }
+    .content figure.inline-image img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); background: var(--soft); }
+    .content figure.inline-image figcaption { color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin-top: 8px; }
+    .content .article-video { margin: 2em 0 0; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--soft); }
+    .content .article-video h2 { margin-top: 0; }
+    .content .video-frame { position: relative; width: 100%; padding-top: 56.25%; overflow: hidden; border-radius: 8px; background: #000; margin: 14px 0; }
+    .content .video-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
     .profile { padding: 28px 0 52px; display: grid; gap: 20px; }
     .profile-head { display: flex; gap: 16px; align-items: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .profile-head img { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--soft); }
@@ -1274,7 +1482,7 @@ function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: str
   };
 }
 
-function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
+function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string, categorySlug?: string | null) {
   const items = [
     {
       '@type': 'ListItem',
@@ -1289,7 +1497,7 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
       '@type': 'ListItem',
       position: 2,
       name: article.category,
-      item: publicCategoryUrl(slugify(article.category) || encodeURIComponent(article.category)),
+      item: publicCategoryUrl(categorySlug || slugify(article.category) || encodeURIComponent(article.category)),
     });
   }
 
@@ -1307,16 +1515,18 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
   };
 }
 
-function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: boolean) {
+function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: boolean, categorySlug?: string | null) {
   const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
   const description = article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`;
   const image = article.featured_image_url || '';
+  const articleVideoUrl = extractArticleVideoUrl(article.content || '');
+  const videoSchema = videoObjectJsonLd(article, canonicalUrl, articleVideoUrl);
   const imagePreload = image
     ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 1080))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 700px) calc(100vw - 24px), 1080px" fetchpriority="high" />`
     : '';
   const schemaObjects = [
     articleJsonLd(article, canonicalUrl),
-    breadcrumbJsonLd(article, canonicalUrl),
+    breadcrumbJsonLd(article, canonicalUrl, categorySlug),
     ...(article.author_name
       ? [personJsonLd({
         name: article.author_name,
@@ -1325,6 +1535,7 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
         image_url: article.author_image_url || '',
       })]
       : []),
+    ...(videoSchema ? [videoSchema] : []),
     ...storedSchemaObjects(article.schema_markup),
   ];
 
@@ -1415,6 +1626,27 @@ function categoryPageJsonLd(category: CategoryRow, articles: PublicArticleRow[])
   };
 }
 
+function videoObjectJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string, videoUrl: string) {
+  const normalizedVideoUrl = normalizeYouTubeUrl(videoUrl);
+  const videoId = extractYouTubeVideoId(normalizedVideoUrl);
+  if (!videoId) {
+    return null;
+  }
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'VideoObject',
+    name: `${article.title} Video Guide`,
+    description: article.seo_description || article.excerpt || `Watch the tutorial video for ${article.title}.`,
+    thumbnailUrl: [buildYouTubeThumbnailUrl(videoId)],
+    uploadDate: article.updated_at || article.created_at,
+    embedUrl: buildYouTubeEmbedUrl(videoId),
+    contentUrl: normalizedVideoUrl,
+    publisher: organizationJsonLd(),
+    mainEntityOfPage: canonicalUrl,
+  };
+}
+
 function categoryBreadcrumbJsonLd(category: CategoryRow) {
   return {
     '@context': 'https://schema.org',
@@ -1470,13 +1702,14 @@ function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[]) {
   );
 }
 
-function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean } = {}) {
+function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { preview?: boolean; categorySlug?: string | null } = {}) {
   const preview = Boolean(options.preview);
+  const categorySlug = options.categorySlug || null;
   const image = article.featured_image_url
     ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 1080))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 700px) calc(100vw - 24px), 1080px" width="1360" height="765" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
   const breadcrumbTrail = article.category
-    ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a><span>/</span><span>${escapeHtml(article.title)}</span>`
+    ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(categorySlug || slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a><span>/</span><span>${escapeHtml(article.title)}</span>`
     : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
   const authorLine = article.author_name
     ? `By <a href="/author/${escapeHtml(article.author_slug || slugify(article.author_name) || 'samoon-digital')}">${escapeHtml(article.author_name)}</a> &middot; `
@@ -1501,7 +1734,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
       ${image}
       <article class="content">${article.content}</article>
     </main>`,
-    articleHeadExtras(article, preview),
+    articleHeadExtras(article, preview, categorySlug),
   );
 }
 
@@ -1566,7 +1799,8 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     );
   }
 
-  return c.html(publicArticlePage(article));
+  const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
+  return c.html(publicArticlePage(article, { categorySlug: category?.slug || null }));
 }
 
 function loginPage(error = '') {
@@ -1976,6 +2210,10 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <input id="title" name="title" placeholder="e.g., Waiting List Kya Hai" />
               </div>
               <div class="field">
+                <label for="writer-instructions">Writing Instructions</label>
+                <textarea id="writer-instructions" name="writer_instructions" placeholder="Example: simple Hinglish me likho, intro me clear answer do, examples include karo, job roles ko bullet points me samjhao, comparison table do, FAQs bhi rakho."></textarea>
+              </div>
+              <div class="field">
                 <label for="category">Category</label>
                 <select id="category" name="category" required>
                   <option value="">Select category...</option>
@@ -2007,6 +2245,20 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderOnOffControl('use-training-image-style', 'Image Style', true)}
                 </div>
               </div>
+              <div class="cols-2">
+                <div class="field">
+                  <label for="inline-image-count">Inline Images</label>
+                  <input id="inline-image-count" type="number" min="0" max="4" value="0" />
+                </div>
+                <div class="field">
+                  <label for="image-direction">Image Direction</label>
+                  <textarea id="image-direction" placeholder="Optional: featured aur article images kis style ya kin scenes ke saath generate hon, yahan batayein."></textarea>
+                </div>
+              </div>
+              <div class="field">
+                <label for="video-url">Tutorial Video URL</label>
+                <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+              </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
               <div class="notice" id="gen-notice"></div>
               <div class="progress-panel" id="gen-progress" hidden>
@@ -2025,6 +2277,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <div class="item-row"><div class="title">SEO-optimized blog content</div></div>
                 <div class="item-row"><div class="title">Schema markup (FAQ, Article)</div></div>
                 <div class="item-row"><div class="title">AVIF-ready featured image delivery</div></div>
+                <div class="item-row"><div class="title">Optional inline section images</div></div>
                 <div class="item-row"><div class="title">Meta title &amp; description</div></div>
               </div>
             </div>
@@ -2055,7 +2308,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
           'Source link reading or headline rewriting',
           'Related internal articles and SEO rules preparing',
           'Hindi/Hinglish article body, FAQ and links writing',
-          'Featured image prompt and alt text creating',
+          'Featured and inline image prompts creating',
           'Image generation and AVIF delivery preparing',
           'R2 upload, schema and draft save'
         ];
@@ -2122,6 +2375,10 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 useTrainingTitleStyle: document.querySelector('input[name="use-training-title-style"]:checked').value === 'on',
                 useTrainingArticleStyle: document.querySelector('input[name="use-training-article-style"]:checked').value === 'on',
                 useTrainingImageStyle: document.querySelector('input[name="use-training-image-style"]:checked').value === 'on',
+                writerInstructions: document.getElementById('writer-instructions').value,
+                inlineImageCount: Number(document.getElementById('inline-image-count').value) || 0,
+                imageDirection: document.getElementById('image-direction').value,
+                videoUrl: document.getElementById('video-url').value,
                 newsAngle: document.querySelector('input[name="news-angle"]:checked').value === 'on',
               }),
             });
@@ -2145,6 +2402,8 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
 }
 
 function editArticlePage(user: SessionUser, article: ArticleRow, categories: CategoryRow[], authors: AuthorRow[]) {
+  const existingVideoUrl = extractArticleVideoUrl(article.content || '');
+  const editableContent = stripArticleVideoSection(article.content || '');
   return appShellPage(user, {
     activeNav: 'articles',
     pageTitle: `Edit Article - ${article.title}`,
@@ -2196,7 +2455,11 @@ function editArticlePage(user: SessionUser, article: ArticleRow, categories: Cat
             </div>
             <div class="field">
               <label for="content">Content HTML</label>
-              <textarea id="content" style="min-height:360px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;">${escapeHtml(article.content)}</textarea>
+              <textarea id="content" style="min-height:360px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;">${escapeHtml(editableContent)}</textarea>
+            </div>
+            <div class="field">
+              <label for="video-url">Tutorial Video URL</label>
+              <input id="video-url" type="url" value="${escapeHtml(existingVideoUrl)}" placeholder="https://www.youtube.com/watch?v=..." />
             </div>
             <button class="btn btn-primary" type="submit" id="save-article">Save Article</button>
             <div class="notice" id="article-notice"></div>
@@ -2223,6 +2486,7 @@ function editArticlePage(user: SessionUser, article: ArticleRow, categories: Cat
                 seoTitle: document.getElementById('seo-title').value,
                 seoDescription: document.getElementById('seo-description').value,
                 content: document.getElementById('content').value,
+                videoUrl: document.getElementById('video-url').value,
               }),
             });
             const data = await res.json();
@@ -2282,7 +2546,7 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
               <table>
                 <thead>
                   <tr>
-                    <th>Name</th>
+                    <th>Display Name</th>
                     <th>Description</th>
                     <th>Order</th>
                     <th>Actions</th>
@@ -2298,8 +2562,12 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
               <form class="form" id="category-form">
                 <input id="category-id" type="hidden" />
                 <div class="field">
-                  <label for="category-name">Name</label>
-                  <input id="category-name" required placeholder="News" />
+                  <label for="category-name">Display Name</label>
+                  <input id="category-name" required placeholder="जॉब्स / टेक्नोलॉजी / रेलवे" />
+                </div>
+                <div class="field">
+                  <label for="category-slug">URL Slug</label>
+                  <input id="category-slug" required placeholder="jobs / technology / railway" />
                 </div>
                 <div class="field">
                   <label for="category-description">Description</label>
@@ -2326,22 +2594,53 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
         function resetForm() {
           document.getElementById('category-id').value = '';
           document.getElementById('category-name').value = '';
+          document.getElementById('category-slug').value = '';
           document.getElementById('category-description').value = '';
           document.getElementById('category-order').value = '100';
           document.getElementById('category-form-title').textContent = 'Add Category';
           cancelBtn.style.display = 'none';
           notice.textContent = '';
           notice.className = 'notice';
+          slugTouched = false;
         }
+
+        function makeSlug(value) {
+          return value
+            .normalize('NFKD')
+            .toLowerCase()
+            .trim()
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9\\s-]/g, '')
+            .replace(/\\s+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '');
+        }
+
+        const nameInput = document.getElementById('category-name');
+        const slugInput = document.getElementById('category-slug');
+        let slugTouched = false;
+
+        slugInput.addEventListener('input', () => {
+          slugTouched = Boolean(slugInput.value.trim());
+          slugInput.value = makeSlug(slugInput.value);
+        });
+
+        nameInput.addEventListener('input', () => {
+          if (!slugTouched) {
+            slugInput.value = makeSlug(nameInput.value);
+          }
+        });
 
         function editCategory(id) {
           const category = categories.find((item) => item.id === id);
           if (!category) return;
           document.getElementById('category-id').value = category.id;
           document.getElementById('category-name').value = category.name;
+          document.getElementById('category-slug').value = category.slug;
           document.getElementById('category-description').value = category.description || '';
           document.getElementById('category-order').value = category.sort_order || 100;
           document.getElementById('category-form-title').textContent = 'Edit Category';
+          slugTouched = true;
           cancelBtn.style.display = '';
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }
@@ -2353,6 +2652,7 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
           const id = document.getElementById('category-id').value;
           const payload = {
             name: document.getElementById('category-name').value,
+            slug: document.getElementById('category-slug').value,
             description: document.getElementById('category-description').value,
             sort_order: Number(document.getElementById('category-order').value) || 100,
           };
@@ -2953,7 +3253,8 @@ app.get('/articles/:id/preview', async (c) => {
     );
   }
 
-  return c.html(publicArticlePage(article, { preview: article.status !== 'published' }));
+  const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
+  return c.html(publicArticlePage(article, { preview: article.status !== 'published', categorySlug: category?.slug || null }));
 });
 
 app.get('/articles/:id/edit', async (c) => {
@@ -3073,15 +3374,22 @@ app.patch('/api/articles/:id', async (c) => {
     seoTitle?: string;
     seoDescription?: string;
     content?: string;
+    videoUrl?: string;
   }>();
   const title = normalizeText(body.title);
-  const content = normalizeText(body.content);
+  let content = normalizeText(body.content);
   const category = normalizeText(body.category) || 'News';
   const status = normalizeText(body.status) || 'draft';
+  const rawVideoUrl = normalizeText(body.videoUrl);
+  const videoUrl = normalizeYouTubeUrl(rawVideoUrl);
   const allowedStatuses = new Set(['draft', 'review', 'published']);
 
   if (!title || !content) {
     return c.json({ ok: false, message: 'Title aur content required hai' }, 400);
+  }
+
+  if (rawVideoUrl && !videoUrl) {
+    return c.json({ ok: false, message: 'Valid YouTube video link required hai' }, 400);
   }
 
   if (!allowedStatuses.has(status)) {
@@ -3094,6 +3402,7 @@ app.patch('/api/articles/:id', async (c) => {
   }
 
   const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
+  content = applyArticleVideoSection(content, videoUrl, title);
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
     .prepare(
@@ -3134,14 +3443,23 @@ app.post('/api/categories', async (c) => {
     return c.json({ ok: false, message: 'Unauthorized' }, 401);
   }
 
-  const body = await c.req.json<{ name?: string; description?: string; sort_order?: number }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; sort_order?: number }>();
   const name = normalizeText(body.name);
+  const requestedSlug = normalizeText(body.slug);
   const description = normalizeText(body.description);
   const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
-  const slug = slugify(name);
+  const slug = slugify(requestedSlug || name);
 
   if (!name || !slug) {
-    return c.json({ ok: false, message: 'Category name required hai' }, 400);
+    return c.json({ ok: false, message: 'Display name aur URL slug required hai' }, 400);
+  }
+
+  const existing = await c.env.ADMIN_DB
+    .prepare('SELECT id FROM categories WHERE (slug = ? OR name = ?) LIMIT 1')
+    .bind(slug, name)
+    .first<{ id: string }>();
+  if (existing) {
+    return c.json({ ok: false, message: 'Category name ya slug already exists' }, 409);
   }
 
   const now = new Date().toISOString();
@@ -3161,20 +3479,44 @@ app.patch('/api/categories/:id', async (c) => {
   }
 
   const id = c.req.param('id');
-  const body = await c.req.json<{ name?: string; description?: string; sort_order?: number }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; sort_order?: number }>();
   const name = normalizeText(body.name);
+  const requestedSlug = normalizeText(body.slug);
   const description = normalizeText(body.description);
   const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
-  const slug = slugify(name);
+  const slug = slugify(requestedSlug || name);
 
   if (!name || !slug) {
-    return c.json({ ok: false, message: 'Category name required hai' }, 400);
+    return c.json({ ok: false, message: 'Display name aur URL slug required hai' }, 400);
+  }
+
+  const current = await c.env.ADMIN_DB
+    .prepare('SELECT name, slug FROM categories WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<{ name: string; slug: string }>();
+  if (!current) {
+    return c.json({ ok: false, message: 'Category not found' }, 404);
+  }
+
+  const duplicate = await c.env.ADMIN_DB
+    .prepare('SELECT id FROM categories WHERE id != ? AND (slug = ? OR name = ?) LIMIT 1')
+    .bind(id, slug, name)
+    .first<{ id: string }>();
+  if (duplicate) {
+    return c.json({ ok: false, message: 'Category name ya slug already exists' }, 409);
   }
 
   await c.env.ADMIN_DB
     .prepare('UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ?, updated_at = ? WHERE id = ?')
     .bind(name, slug, description || null, sortOrder, new Date().toISOString(), id)
     .run();
+
+  if (current.name !== name) {
+    const now = new Date().toISOString();
+    await c.env.ADMIN_DB.prepare('UPDATE articles SET category = ? WHERE category = ?').bind(name, current.name).run();
+    await c.env.ADMIN_DB.prepare('UPDATE training_samples SET category = ?, updated_at = ? WHERE category = ?').bind(name, now, current.name).run();
+    await c.env.ADMIN_DB.prepare('UPDATE seo_config SET category = ?, updated_at = ? WHERE category = ?').bind(name, now, current.name).run();
+  }
 
   return c.json({ ok: true });
 });
@@ -3472,6 +3814,10 @@ app.post('/api/articles/generate', async (c) => {
       category?: string;
       sourceUrl?: string;
       authorId?: string;
+      writerInstructions?: string;
+      imageDirection?: string;
+      inlineImageCount?: number;
+      videoUrl?: string;
       includeFaqs?: boolean;
       includeToc?: boolean;
       includeInternalLinks?: boolean;
@@ -3485,6 +3831,10 @@ app.post('/api/articles/generate', async (c) => {
     }>();
     const manualTitle = normalizeText(body.title);
     const requestedCategory = normalizeText(body.category) || 'News';
+    const writerInstructions = normalizeText(body.writerInstructions);
+    const imageDirection = normalizeText(body.imageDirection);
+    const inlineImageCount = clampInlineImageCount(body.inlineImageCount);
+    const videoUrl = normalizeYouTubeUrl(normalizeText(body.videoUrl));
     const controls = parseGenerationControls(body as Record<string, unknown>);
     const sourceUrl = normalizeText(body.sourceUrl);
     const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
@@ -3492,6 +3842,10 @@ app.post('/api/articles/generate', async (c) => {
 
     if (!source && !manualTitle) {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
+    }
+
+    if (normalizeText(body.videoUrl) && !videoUrl) {
+      return c.json({ ok: false, message: 'Valid YouTube video link required hai' }, 400);
     }
 
     const requestedTrainingStyles = await readTrainingStylesForCategory(c.env.ADMIN_DB, requestedCategory);
@@ -3531,9 +3885,13 @@ app.post('/api/articles/generate', async (c) => {
       controls,
       trainingStyles,
       relatedArticles,
+      writerInstructions,
+      imageDirection,
+      inlineImageCount,
+      tutorialVideoUrl: videoUrl,
     });
     const blogContent = await openaiClient.generateBlogContent(seoPrompt, title, source || undefined);
-    const content = normalizeArticleContent(blogContent.content);
+    let content = normalizeArticleContent(blogContent.content);
     if (!content) {
       throw new Error('OpenAI blog response produced an empty article body');
     }
@@ -3543,6 +3901,32 @@ app.post('/api/articles/generate', async (c) => {
       blogContent.featured_image_alt,
     );
     const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
+    const uploadedInlineAssets: Array<{ objectKey: string; publicUrl: string; image: GeneratedImage; caption: string }> = [];
+    const inlineImagesToRender: Array<{ url: string; alt: string; caption: string }> = [];
+    const inlinePlans = (blogContent.inline_images || []).slice(0, inlineImageCount);
+    for (let index = 0; index < inlinePlans.length; index += 1) {
+      const plan = inlinePlans[index];
+      const inlineImage = await openaiClient.generateFeaturedImage(
+        plan.prompt,
+        `${title} Section ${index + 1}`,
+        plan.alt || `${title} image ${index + 1}`,
+        'inline',
+      );
+      const uploadedInlineImage = await uploadInlineImage(c, inlineImage, articleId, slug, index);
+      uploadedInlineAssets.push({
+        objectKey: uploadedInlineImage.objectKey,
+        publicUrl: uploadedInlineImage.publicUrl,
+        image: inlineImage,
+        caption: plan.caption || '',
+      });
+      inlineImagesToRender.push({
+        url: uploadedInlineImage.publicUrl,
+        alt: inlineImage.altText,
+        caption: plan.caption || '',
+      });
+    }
+    content = injectInlineImagesIntoArticle(content, inlineImagesToRender);
+    content = applyArticleVideoSection(content, videoUrl, title);
     const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
 
     await c.env.ADMIN_DB
@@ -3572,6 +3956,9 @@ app.post('/api/articles/generate', async (c) => {
       .run();
 
     await recordMediaAsset(c.env.ADMIN_DB, articleId, uploadedImage.objectKey, uploadedImage.publicUrl, image);
+    for (const asset of uploadedInlineAssets) {
+      await recordMediaAsset(c.env.ADMIN_DB, articleId, asset.objectKey, asset.publicUrl, asset.image);
+    }
 
     return c.json({
       ok: true,
