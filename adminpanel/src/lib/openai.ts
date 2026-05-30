@@ -269,7 +269,7 @@ class OpenAIClient {
         source?: SourceArticleContext,
     ): Promise<GeneratedBlogContent> {
         const sourceInstructions = source
-            ? `\n\nUse this source URL as the reporting source: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content excerpt:\n${source.text.substring(0, 9000)}\n\nWrite a fresh Hindi/Hinglish news-style article for Laxy.in. Do not copy sentences. Summarize, explain context, and make it useful for Indian readers. Mention the source only when naturally useful.`
+            ? `\n\nPRIVATE BACKGROUND SOURCE - DO NOT DISCLOSE IN ARTICLE.\nThe following source material is only for your understanding. Never write "Reporting Source", "Source", "SarkariResult source page", the source website name, or any sentence saying this article was made from another website.\nSource page title for private context: ${source.title || 'Unknown'}\nPrivate source content excerpt:\n${source.text.substring(0, 9000)}\n\nWrite a fresh Hindi/Hinglish news-style article for Hindiline. Do not copy sentences. Summarize, explain context, and make it useful for Indian readers. Do not cite or name the source website.`
             : '';
         const content = await this.createJsonResponse(
             systemPrompt,
@@ -296,8 +296,8 @@ class OpenAIClient {
 
     async createHeadlineFromTitle(rawTitle: string, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
-            'You are an Indian Hindi/Hinglish news editor for Laxy.in. Rewrite rough user-provided topics into short, catchy, SEO-safe Hindi headlines. Do not copy the raw title as-is. Keep it factual, no clickbait, no extra punctuation spam. Return JSON with keys: blog_title, category, reason.',
-            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nSaved category style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article.`,
+            'You are an Indian Hindi/Hinglish news editor for Hindiline. Rewrite rough user-provided topics into short, catchy, SEO-safe Hindi headlines. Do not copy the raw title as-is. Think of 3 headline options internally, then return only the strongest one. Make it feel publishable by surfacing the key update, benefit, audience, timeline, warning, or reason-to-care when relevant. Keep it factual, not cheap clickbait, and do not use punctuation spam. Return JSON with keys: blog_title, category, reason.',
+            `Raw user title/topic: ${rawTitle}\nCategory hint: ${categoryHint || 'News'}\nSaved headline style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nCreate a sharper Hindi/Hinglish headline suitable for a news/blog article. News titles should feel strong enough to win clicks without sounding fake.`,
             900,
         );
         const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI headline brief');
@@ -309,8 +309,8 @@ class OpenAIClient {
 
     async createArticleBriefFromSource(source: SourceArticleContext, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {
         const content = await this.createJsonResponse(
-            'You are an Indian news editor for Laxy.in. Read the source content and create the best Hindi/Hinglish article brief for our website. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
-            `Category hint: ${categoryHint || 'News'}\nSaved category style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
+            'You are an Indian news editor for Hindiline. Read the source content and create the best Hindi/Hinglish article brief for our website. The headline must feel newsroom-sharp and publication-ready, not bland. Think of 3 headline options internally and choose the strongest factual one. Use the most important update, audience impact, timeline, amount, result, or action point to make the title compelling without becoming clickbait. Return JSON with keys: blog_title (clear Hindi/Hinglish headline, no clickbait), category (one of: News, Government, Railway, Education, Finance, Technology, Business, Sports, Entertainment, Lifestyle, Default), reason (1 sentence explaining audience value).',
+            `Category hint: ${categoryHint || 'News'}\nSaved headline style notes:\n${trainingNotes.join('\n') || 'No saved training notes.'}\nSource URL: ${source.url}\nSource page title: ${source.title || 'Unknown'}\nSource content:\n${source.text.substring(0, 9000)}`,
             1200,
         );
         const parsed = this.parseJson<BlogTopicResult>(content, 'OpenAI source article brief');
@@ -326,13 +326,20 @@ class OpenAIClient {
         title?: string;
         articleText?: string;
         imageDataUrl?: string;
+        scanTitleStyle?: boolean;
+        scanArticleStyle?: boolean;
+        scanImageStyle?: boolean;
     }): Promise<TrainingAnalysisResult> {
+        const scanTitleStyle = input.scanTitleStyle !== false;
+        const scanArticleStyle = input.scanArticleStyle !== false;
+        const scanImageStyle = input.scanImageStyle !== false;
         const textInput = [
             `Category: ${input.category}`,
             input.sourceUrl ? `Source/link: ${input.sourceUrl}` : '',
             input.title ? `Sample title/headline: ${input.title}` : '',
             input.articleText ? `Sample article/content:\n${input.articleText.slice(0, 9000)}` : '',
-            'Analyze this sample for reusable editorial training. Return JSON with ONLY these string keys: title_style, image_style, summary. title_style should explain headline/title pattern. image_style should be a reusable featured image generation prompt/style. Do not return nested objects or arrays.',
+            `Scan targets:\n- title_style: ${scanTitleStyle ? 'ON' : 'OFF'}\n- article_style: ${scanArticleStyle ? 'ON' : 'OFF'}\n- image_style: ${scanImageStyle ? 'ON' : 'OFF'}`,
+            'Analyze this sample for reusable editorial training. Return JSON with ONLY these string keys: title_style, article_style, image_style, summary. title_style should explain headline/title pattern. article_style should explain reusable body/blog structure and tone. image_style should be a reusable featured image generation prompt/style. If a scan target is OFF, return an empty string for that key. Do not return nested objects or arrays.',
         ]
             .filter(Boolean)
             .join('\n\n');
@@ -349,7 +356,7 @@ class OpenAIClient {
             body: JSON.stringify({
                 model: this.textModel,
                 instructions:
-                    'You are a Hindi news/blog editorial trainer for Laxy.in. Extract only reusable headline/title style and featured image prompt style. Return valid JSON only with string keys: title_style, image_style, summary.',
+                    'You are a Hindi news/blog editorial trainer for Hindiline. Extract only reusable headline style, article/body style, and featured image prompt style when requested. Return valid JSON only with string keys: title_style, article_style, image_style, summary. If any style target is disabled, return an empty string for that field.',
                 input: [
                     {
                         role: 'user',
@@ -373,7 +380,7 @@ class OpenAIClient {
             'OpenAI training analysis',
             {
                 title_style: `Use concise Hindi/Hinglish headlines inspired by: ${input.title || input.sourceUrl || input.category}`,
-                article_style: '',
+                article_style: 'Use crisp intro-first blog structure with short paragraphs, useful subheads, and a practical Hindi/Hinglish explainer tone.',
                 image_style: input.imageDataUrl
                     ? 'Use the source featured image direction: clean editorial composition, one clear subject, mobile-safe crop.'
                     : 'Use clean editorial featured images with one clear subject, low noise, and Google Discover-safe 16:9 framing.',
@@ -395,9 +402,14 @@ class OpenAIClient {
         );
 
         return {
-            title_style: titleStyle,
-            article_style: '',
-            image_style: imageStyle,
+            title_style: scanTitleStyle ? titleStyle : '',
+            article_style: scanArticleStyle
+                ? this.scalarText(
+                    parsedRecord.article_style,
+                    'Use crisp intro-first blog structure with short paragraphs, useful subheads, and a practical Hindi/Hinglish explainer tone.',
+                )
+                : '',
+            image_style: scanImageStyle ? imageStyle : '',
             linking_style: '',
             summary: this.scalarText(parsedRecord.summary, 'Headline and image prompt training saved.'),
         };

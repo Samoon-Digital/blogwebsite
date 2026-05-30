@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
-import { buildSeoPrompt, type SeoPromptControls } from './lib/seo-prompt';
+import { buildSeoPrompt, type SeoPromptControls, type TrainingStyleSet } from './lib/seo-prompt';
 import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage } from './lib/openai';
 
 type Bindings = {
@@ -197,7 +197,7 @@ interface R2ObjectBody {
 const app = new Hono<{ Bindings: Bindings }>();
 const SESSION_COOKIE = 'samoondgital_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-const PUBLIC_SITE_ORIGIN = 'https://laxy.in';
+const PUBLIC_SITE_ORIGIN = 'https://hindiline.com';
 
 function publicArticleUrl(slug: string) {
   return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
@@ -346,20 +346,25 @@ function defaultGenerationControls(): SeoPromptControls {
     includeInternalLinks: true,
     includeExternalLinks: true,
     includeTables: true,
-    useTrainingStyle: true,
+    useTrainingTitleStyle: true,
+    useTrainingArticleStyle: true,
+    useTrainingImageStyle: true,
     newsAngle: true,
   };
 }
 
 function parseGenerationControls(body: Record<string, unknown>): SeoPromptControls {
   const defaults = defaultGenerationControls();
+  const legacyTrainingStyle = booleanControl(body.useTrainingStyle, true);
   return {
     includeFaqs: booleanControl(body.includeFaqs, defaults.includeFaqs),
     includeToc: booleanControl(body.includeToc, defaults.includeToc),
     includeInternalLinks: booleanControl(body.includeInternalLinks, defaults.includeInternalLinks),
     includeExternalLinks: booleanControl(body.includeExternalLinks, defaults.includeExternalLinks),
     includeTables: booleanControl(body.includeTables, defaults.includeTables),
-    useTrainingStyle: booleanControl(body.useTrainingStyle, defaults.useTrainingStyle),
+    useTrainingTitleStyle: booleanControl(body.useTrainingTitleStyle, legacyTrainingStyle),
+    useTrainingArticleStyle: booleanControl(body.useTrainingArticleStyle, legacyTrainingStyle),
+    useTrainingImageStyle: booleanControl(body.useTrainingImageStyle, legacyTrainingStyle),
     newsAngle: booleanControl(body.newsAngle, defaults.newsAngle),
   };
 }
@@ -396,6 +401,9 @@ function dbText(value: unknown, fallback: string | null = null): string | null {
 function normalizeArticleContent(content: string) {
   return content
     .replace(/^\s*<h1\b[^>]*>[\s\S]*?<\/h1>\s*/i, '')
+    .replace(/<[^>]+>\s*(?:Reporting\s+Source|Source|स्रोत)\s*[:\-–—]?\s*[\s\S]*?<\/(?:p|div|li|tr)>/gi, '')
+    .replace(/<(?:h2|h3|strong|b)[^>]*>\s*(?:Reporting\s+Source|Source|स्रोत)\s*<\/(?:h2|h3|strong|b)>[\s\S]*?(?=<h2|<h3|$)/gi, '')
+    .replace(/(?:Reporting\s+Source|Source|स्रोत)\s*[:\-–—]?\s*(?:SarkariResult|source page|official website|website)[^\n<]*/gi, '')
     .replace(/^\s*```(?:html)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
@@ -889,23 +897,20 @@ async function readTrainingSamples(db: D1Database) {
   );
 }
 
-async function readTrainingNotesForCategory(db: D1Database, category: string) {
+async function readTrainingStylesForCategory(db: D1Database, category: string): Promise<TrainingStyleSet> {
   const rows = await queryAll<TrainingSampleRow>(
     db
       .prepare(
-        'SELECT title_style, NULL AS article_style, image_style, NULL AS linking_style FROM training_samples WHERE category = ? ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 5',
+        'SELECT title_style, article_style, image_style, linking_style FROM training_samples WHERE category = ? ORDER BY datetime(created_at) DESC, rowid DESC LIMIT 5',
       )
       .bind(category),
   );
 
-  return rows.map((row) => {
-    return [
-      row.title_style ? `Title style: ${row.title_style}` : '',
-      row.image_style ? `Featured image prompt/style: ${row.image_style}` : '',
-    ]
-      .filter(Boolean)
-      .join(' | ');
-  }).filter(Boolean);
+  return {
+    title: rows.map((row) => dbText(row.title_style, '') || '').filter(Boolean),
+    article: rows.map((row) => dbText(row.article_style, '') || '').filter(Boolean),
+    image: rows.map((row) => dbText(row.image_style, '') || '').filter(Boolean),
+  };
 }
 
 async function readRelatedArticlesForPrompt(db: D1Database, category: string, currentTitle: string) {
@@ -1169,15 +1174,15 @@ function publicShell(title: string, description: string, content: string, headEx
 <body>
   <header class="site-header">
     <div class="wrap nav">
-      <a class="brand" href="/">Laxy.in</a>
+      <a class="brand" href="/">Hindiline</a>
       <nav class="nav-links">
         <a href="/">Latest</a>
-        <a href="https://admin.laxy.in">Admin</a>
+        <a href="https://admin.hindiline.com">Admin</a>
       </nav>
     </div>
   </header>
   ${content}
-  <footer class="site-footer"><div class="wrap">Laxy.in &copy; ${new Date().getFullYear()}</div></footer>
+  <footer class="site-footer"><div class="wrap">Hindiline &copy; ${new Date().getFullYear()}</div></footer>
 </body>
 </html>`;
 }
@@ -1218,7 +1223,7 @@ function organizationJsonLd() {
   return {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    name: 'Laxy.in',
+    name: 'Hindiline',
     url: PUBLIC_SITE_ORIGIN,
     logo: `${PUBLIC_SITE_ORIGIN}/favicon.ico`,
   };
@@ -1228,7 +1233,7 @@ function websiteJsonLd() {
   return {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
-    name: 'Laxy.in',
+    name: 'Hindiline',
     url: PUBLIC_SITE_ORIGIN,
   };
 }
@@ -1252,7 +1257,7 @@ function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: str
     '@context': 'https://schema.org',
     '@type': isNews ? 'NewsArticle' : 'BlogPosting',
     headline: article.seo_title || article.title,
-    description: article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
+    description: article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
     image,
     datePublished: article.created_at,
     dateModified: article.updated_at,
@@ -1304,7 +1309,7 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
 
 function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: boolean) {
   const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
-  const description = article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`;
+  const description = article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`;
   const image = article.featured_image_url || '';
   const imagePreload = image
     ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 1080))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 700px) calc(100vw - 24px), 1080px" fetchpriority="high" />`
@@ -1355,7 +1360,7 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
           <div class="post-card-body">
             <div class="kicker">${article.category ? `<span>${escapeHtml(article.category)}</span>` : 'Latest'}</div>
             <h2>${escapeHtml(article.title)}</h2>
-            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Laxy.in.')}</p>
+            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
             <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
           </div>
         </a>`;
@@ -1364,8 +1369,8 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
     : `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`;
 
   return publicShell(
-    'Laxy.in - Latest Blogs and Updates',
-    'Laxy.in par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
+    'Hindiline - Latest Blogs and Updates',
+    'Hindiline par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
     `<section class="hero"><div class="wrap"><h1>Latest useful updates, explained simply.</h1><p>Jobs, government notifications, education, finance, technology aur daily-life guides ko Hinglish mein clear format mein padhein.</p></div></section>${categoryLinks}${cards}`,
   );
 }
@@ -1382,7 +1387,7 @@ function articleCardsList(articles: PublicArticleRow[]) {
           <div class="post-card-body">
             <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
             <h2>${escapeHtml(article.title)}</h2>
-            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Laxy.in.')}</p>
+            <p>${escapeHtml(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.')}</p>
             <div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>
           </div>
         </a>`;
@@ -1422,7 +1427,7 @@ function categoryBreadcrumbJsonLd(category: CategoryRow) {
 }
 
 function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[]) {
-  const title = `${category.name} Articles - Laxy.in`;
+  const title = `${category.name} Articles - Hindiline`;
   const description = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
   return publicShell(
     title,
@@ -1435,8 +1440,8 @@ function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[])
 }
 
 function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[]) {
-  const title = `${author.name} - Author at Laxy.in`;
-  const description = author.bio || `${author.name} ke latest articles aur updates Laxy.in par padhein.`;
+  const title = `${author.name} - Author at Hindiline`;
+  const description = author.bio || `${author.name} ke latest articles aur updates Hindiline par padhein.`;
   const image = author.image_url
     ? `<img src="${escapeHtml(optimizedImageUrl(author.image_url, 240, 72))}" width="168" height="168" alt="${escapeHtml(author.name)}" loading="eager" decoding="async" />`
     : '<div></div>';
@@ -1482,7 +1487,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
 
   return publicShell(
     article.seo_title || article.title,
-    article.seo_description || article.excerpt || `Read ${article.title} on Laxy.in.`,
+    article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
     `${previewBanner}<main class="wrap article">
       <header class="article-head">
         <nav class="breadcrumbs" aria-label="Breadcrumb">
@@ -1525,7 +1530,7 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const category = await readCategoryBySlug(c.env.ADMIN_DB, categorySlug);
     if (!category) {
-      return c.html(publicShell('Category not found - Laxy.in', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+      return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
     }
     const articles = await readPublishedArticlesByCategory(c.env.ADMIN_DB, category.name);
     return c.html(publicCategoryPage(category, articles));
@@ -1538,7 +1543,7 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const author = await readAuthorBySlug(c.env.ADMIN_DB, authorSlug);
     if (!author) {
-      return c.html(publicShell('Author not found - Laxy.in', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
+      return c.html(publicShell('Author not found - Hindiline', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>'), 404);
     }
     const articles = await readPublishedArticlesByAuthor(c.env.ADMIN_DB, author.id);
     return c.html(publicAuthorPage(author, articles));
@@ -1553,7 +1558,7 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   if (!article) {
     return c.html(
       publicShell(
-        'Article not found - Laxy.in',
+        'Article not found - Hindiline',
         'The requested article could not be found.',
         '<main class="wrap empty">Article nahi mila. <a href="/">Latest blogs</a> dekhein.</main>',
       ),
@@ -1759,7 +1764,7 @@ function articlesPage(user: SessionUser, articles: ArticleRow[], message = '') {
             <div class="article-card-meta">Updated ${escapeHtml(formatDateLabel(a.updated_at))}</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               ${a.status === 'published'
-            ? `<a class="btn btn-secondary" href="https://laxy.in/${escapeHtml(a.slug)}" target="_blank" rel="noopener">View Live</a>
+            ? `<a class="btn btn-secondary" href="https://hindiline.com/${escapeHtml(a.slug)}" target="_blank" rel="noopener">View Live</a>
                    <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Move to Draft</button>`
             : `<a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/preview" target="_blank" rel="noopener">Preview</a>
                    <button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
@@ -1833,7 +1838,7 @@ function articlesManagementPage(
             <td>
               <div class="article-actions">
                 ${a.status === 'published'
-            ? `<a class="btn btn-secondary" href="https://laxy.in/${escapeHtml(a.slug)}" target="_blank" rel="noopener">Live</a>
+            ? `<a class="btn btn-secondary" href="https://hindiline.com/${escapeHtml(a.slug)}" target="_blank" rel="noopener">Live</a>
                    <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Draft</button>`
             : `<a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/preview" target="_blank" rel="noopener">Preview</a>
                    <button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
@@ -1954,7 +1959,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
     pageTitle: 'Generate Article — Samoon Digital',
     eyebrow: 'AI Generator',
     title: 'Generate Article with AI',
-    subtitle: 'Paste a source link for a Hindi news-style rewrite, or enter a title for a fresh article.',
+    subtitle: 'Paste a source link for a Hindi news-style rewrite, or enter a title for a fresh article. Saved training ko ab title, blog aur image level par control kiya ja sakta hai.',
     toolbar: `<a class="btn btn-secondary" href="/articles">Back to Articles</a>`,
     content: `
       <div class="cols-aside">
@@ -1991,8 +1996,15 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderOnOffControl('include-internal-links', 'Internal Links', true)}
                   ${renderOnOffControl('include-external-links', 'External Links', true)}
                   ${renderOnOffControl('include-tables', 'Tables', true)}
-                  ${renderOnOffControl('use-training-style', 'Training Style', true)}
                   ${renderOnOffControl('news-angle', 'News Angle', true)}
+                </div>
+              </div>
+              <div class="field">
+                <label>Saved Training Apply Karein?</label>
+                <div class="radio-grid">
+                  ${renderOnOffControl('use-training-title-style', 'Title Style', true)}
+                  ${renderOnOffControl('use-training-article-style', 'Blog Style', true)}
+                  ${renderOnOffControl('use-training-image-style', 'Image Style', true)}
                 </div>
               </div>
               <button class="btn btn-primary btn-full" id="gen-btn" type="submit">Generate with AI</button>
@@ -2107,7 +2119,9 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 includeInternalLinks: document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
                 includeExternalLinks: document.querySelector('input[name="include-external-links"]:checked').value === 'on',
                 includeTables: document.querySelector('input[name="include-tables"]:checked').value === 'on',
-                useTrainingStyle: document.querySelector('input[name="use-training-style"]:checked').value === 'on',
+                useTrainingTitleStyle: document.querySelector('input[name="use-training-title-style"]:checked').value === 'on',
+                useTrainingArticleStyle: document.querySelector('input[name="use-training-article-style"]:checked').value === 'on',
+                useTrainingImageStyle: document.querySelector('input[name="use-training-image-style"]:checked').value === 'on',
                 newsAngle: document.querySelector('input[name="news-angle"]:checked').value === 'on',
               }),
             });
@@ -2531,24 +2545,27 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
             </td>
             <td>
               <div style="font-weight:600;">${escapeHtml(sample.input_title || sample.source_url || 'Training sample')}</div>
-              <div style="font-size:0.8125rem;color:var(--text-muted);">${escapeHtml(sample.title_style || '')}</div>
             </td>
-            <td>${sample.image_url ? `<img class="author-avatar" src="${escapeHtml(sample.image_url)}" alt="Training image" />` : ''}</td>
             <td>
-              <div>${escapeHtml(sample.image_style || '')}</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                ${sample.title_style ? '<span class="pill">Title</span>' : ''}
+                ${sample.article_style ? '<span class="pill">Blog</span>' : ''}
+                ${sample.image_style ? '<span class="pill">Image</span>' : ''}
+                ${!sample.title_style && !sample.article_style && !sample.image_style ? '<span class="pill">No style saved</span>' : ''}
+              </div>
               <button class="btn btn-secondary" type="button" onclick="saveTrainingCategory('${escapeHtml(sample.id)}', this)" style="margin-top:8px;">Save Category</button>
             </td>
           </tr>`,
       )
       .join('')
-    : `<tr><td colspan="4"><div class="empty-state">No training samples yet.</div></td></tr>`;
+    : `<tr><td colspan="3"><div class="empty-state">No training samples yet.</div></td></tr>`;
 
   return appShellPage(user, {
     activeNav: 'training',
     pageTitle: 'Training | Samoon Digital Admin',
     eyebrow: 'AI Training',
     title: 'Training',
-    subtitle: 'Category-wise examples save karein; generator unke style ko follow karega.',
+    subtitle: 'Category-wise examples save karein; ab aap title, blog aur image style ko alag-alag scan aur apply kar sakte hain.',
     toolbar: `<a class="btn btn-primary" href="/articles/new">New Article</a>`,
     content: `
       <div class="stack">
@@ -2558,7 +2575,7 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
             <div class="card-header"><h2>Saved Training</h2></div>
             <div style="overflow-x:auto;">
               <table>
-                <thead><tr><th>Category</th><th>Headline Style</th><th>Source Image</th><th>Image Prompt</th></tr></thead>
+                <thead><tr><th>Category</th><th>Saved Title</th><th>Styles Stored</th></tr></thead>
                 <tbody>${rows}</tbody>
               </table>
             </div>
@@ -2574,6 +2591,14 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
                 <div class="field">
                   <label for="training-url">Paste Link</label>
                   <input id="training-url" type="url" placeholder="https://example.com/article" required />
+                </div>
+                <div class="field">
+                  <label>Kya Scan Karna Hai?</label>
+                  <div class="radio-grid">
+                    ${renderOnOffControl('scan-title-style', 'Title Style', true)}
+                    ${renderOnOffControl('scan-article-style', 'Blog Style', true)}
+                    ${renderOnOffControl('scan-image-style', 'Image Style', true)}
+                  </div>
                 </div>
                 <button class="btn btn-primary btn-full" id="training-submit" type="submit">Analyze & Save</button>
                 <div class="notice" id="training-notice"></div>
@@ -2603,7 +2628,7 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
           'Headline, meta and page headings scanning',
           'Featured image URL detecting',
           'AI style analysis running',
-          'Title, article, image and linking prompts saving'
+          'Selected style notes saving'
         ];
         let trainingTimer;
 
@@ -2644,6 +2669,9 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
           const payload = new FormData();
           payload.set('category', document.getElementById('training-category').value);
           payload.set('sourceUrl', document.getElementById('training-url').value);
+          payload.set('scanTitleStyle', document.querySelector('input[name="scan-title-style"]:checked').value);
+          payload.set('scanArticleStyle', document.querySelector('input[name="scan-article-style"]:checked').value);
+          payload.set('scanImageStyle', document.querySelector('input[name="scan-image-style"]:checked').value);
           try {
             const res = await fetch('/api/training', { method: 'POST', body: payload });
             const data = await res.json();
@@ -2846,7 +2874,7 @@ function placeholderPage(
 app.use('*', async (c, next) => {
   const host = (c.req.header('host') || new URL(c.req.url).hostname).split(':')[0].toLowerCase();
 
-  if (host === 'laxy.in' || host === 'www.laxy.in') {
+  if (host === 'hindiline.com' || host === 'www.hindiline.com') {
     return handlePublicSite(c);
   }
 
@@ -3279,6 +3307,9 @@ app.post('/api/training', async (c) => {
     const formData = await c.req.raw.formData();
     const category = normalizeText(formData.get('category')) || 'News';
     const sourceUrl = normalizeText(formData.get('sourceUrl'));
+    const scanTitleStyle = booleanControl(formData.get('scanTitleStyle'), true);
+    const scanArticleStyle = booleanControl(formData.get('scanArticleStyle'), true);
+    const scanImageStyle = booleanControl(formData.get('scanImageStyle'), true);
     const sampleId = crypto.randomUUID();
     let imageUrl: string | null = null;
     let imageDataUrl = '';
@@ -3303,11 +3334,15 @@ app.post('/api/training', async (c) => {
       title: source.title,
       articleText,
       imageDataUrl,
+      scanTitleStyle,
+      scanArticleStyle,
+      scanImageStyle,
     });
     const trainingRecord = {
-      title_style: dbText(analysis.title_style, 'Short Hindi/Hinglish factual headline style') || 'Short Hindi/Hinglish factual headline style',
-      image_style: dbText(analysis.image_style, 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') || 'Featured image prompt: clean editorial image, one clear subject, no text overlay.',
-      summary: dbText(analysis.summary, 'Headline and image prompt training saved.') || 'Headline and image prompt training saved.',
+      title_style: scanTitleStyle ? (dbText(analysis.title_style, 'Short Hindi/Hinglish factual headline style') || 'Short Hindi/Hinglish factual headline style') : null,
+      article_style: scanArticleStyle ? (dbText(analysis.article_style, 'Use crisp intro-first blog structure with short paragraphs and useful Hindi/Hinglish subheads.') || 'Use crisp intro-first blog structure with short paragraphs and useful Hindi/Hinglish subheads.') : null,
+      image_style: scanImageStyle ? (dbText(analysis.image_style, 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') || 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') : null,
+      summary: dbText(analysis.summary, 'Training style saved.') || 'Training style saved.',
     };
     const now = new Date().toISOString();
     await c.env.ADMIN_DB
@@ -3324,7 +3359,7 @@ app.post('/api/training', async (c) => {
         null,
         JSON.stringify(trainingRecord),
         trainingRecord.title_style,
-        null,
+        trainingRecord.article_style,
         trainingRecord.image_style,
         null,
         now,
@@ -3443,6 +3478,9 @@ app.post('/api/articles/generate', async (c) => {
       includeExternalLinks?: boolean;
       includeTables?: boolean;
       useTrainingStyle?: boolean;
+      useTrainingTitleStyle?: boolean;
+      useTrainingArticleStyle?: boolean;
+      useTrainingImageStyle?: boolean;
       newsAngle?: boolean;
     }>();
     const manualTitle = normalizeText(body.title);
@@ -3456,10 +3494,18 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
     }
 
-    const requestedTrainingNotes = await readTrainingNotesForCategory(c.env.ADMIN_DB, requestedCategory);
+    const requestedTrainingStyles = await readTrainingStylesForCategory(c.env.ADMIN_DB, requestedCategory);
     const articleBrief = source
-      ? await openaiClient.createArticleBriefFromSource(source, requestedCategory, requestedTrainingNotes)
-      : await openaiClient.createHeadlineFromTitle(manualTitle, requestedCategory, requestedTrainingNotes);
+      ? await openaiClient.createArticleBriefFromSource(
+        source,
+        requestedCategory,
+        controls.useTrainingTitleStyle ? requestedTrainingStyles.title : [],
+      )
+      : await openaiClient.createHeadlineFromTitle(
+        manualTitle,
+        requestedCategory,
+        controls.useTrainingTitleStyle ? requestedTrainingStyles.title : [],
+      );
     const title = normalizeText(articleBrief.blog_title) || manualTitle;
     const category = normalizeText(articleBrief.category) || requestedCategory;
 
@@ -3477,13 +3523,13 @@ app.post('/api/articles/generate', async (c) => {
       return c.json({ ok: false, message: 'An article with this title already exists' }, 409);
     }
 
-    const trainingNotes = category === requestedCategory
-      ? requestedTrainingNotes
-      : await readTrainingNotesForCategory(c.env.ADMIN_DB, category);
+    const trainingStyles = category === requestedCategory
+      ? requestedTrainingStyles
+      : await readTrainingStylesForCategory(c.env.ADMIN_DB, category);
     const relatedArticles = await readRelatedArticlesForPrompt(c.env.ADMIN_DB, category, title);
     const seoPrompt = await buildSeoPrompt(c.env.ADMIN_DB, category, title, {
       controls,
-      trainingNotes,
+      trainingStyles,
       relatedArticles,
     });
     const blogContent = await openaiClient.generateBlogContent(seoPrompt, title, source || undefined);
