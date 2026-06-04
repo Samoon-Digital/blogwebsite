@@ -1546,49 +1546,86 @@ function navItem(href: string, label: string, active: boolean) {
 function publicStyles() {
   return `
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root { color-scheme: light; font-family: "Noto Sans Devanagari", "Hind", "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#101218; --muted:#59606d; --border:#dde2ea; --paper:#ffffff; --soft:#f5f7fb; --accent:#0a5b77; --nav:#2f343b; --nav-active:#d71921; --nav-highlight:#f1ad16; }
-    html, body { min-height: 100%; background: var(--paper); color: var(--text); }
+    :root { color-scheme: light; font-family: "Noto Sans Devanagari", "Hind", "Segoe UI", ui-sans-serif, system-ui, sans-serif; --text:#101828; --muted:#667085; --border:#d9e2ef; --paper:#ffffff; --soft:#f6f9fd; --accent:#092447; --accent-2:#0f5c8f; --red:#e11924; --red-dark:#b70f19; --gold:#f3b21a; --ink:#071527; }
+    html, body { min-height: 100%; background: #ffffff; color: var(--text); }
     a { color: inherit; text-decoration: none; }
     img { max-width: 100%; display: block; }
-    .site-header { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,0.97); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
-    .wrap { width: min(1240px, calc(100% - 24px)); margin: 0 auto; }
+    button { font: inherit; }
+    .site-header { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,0.98); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); box-shadow: 0 8px 28px rgba(15, 38, 70, 0.06); }
+    .wrap { width: min(1240px, calc(100% - 28px)); margin: 0 auto; }
     .header-top { background: #fff; }
-    .header-top-inner { min-height: 110px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 26px; padding: 14px 0 12px; }
+    .header-top-inner { min-height: 68px; display: flex; align-items: center; gap: 18px; padding: 8px 0; }
     .brand-mark { display: inline-flex; align-items: center; flex-shrink: 0; }
-    .brand-logo { width: auto; height: 66px; object-fit: contain; }
+    .brand-logo { width: auto; height: 50px; object-fit: contain; }
     .mobile-menu-anchor { display: none; }
-    .header-ad-slot { min-height: 88px; width: 100%; border-radius: 10px; background: transparent; }
-    .section-nav { background: var(--nav); color: #fff; border-top: 1px solid rgba(255,255,255,0.08); }
-    .nav-scroll { display: flex; align-items: stretch; gap: 0; overflow-x: auto; scrollbar-width: none; }
+    .header-ad-slot { display: none; }
+    .header-search { margin-left: auto; width: 42px; height: 42px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
+    .header-search svg, .nav-icon svg, .nav-arrow svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; color: var(--ink); }
+    .nav-scroll { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 4px 0; }
     .nav-scroll::-webkit-scrollbar { display: none; }
-    .top-nav-link { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 16px; font-size: 0.96rem; font-weight: 600; white-space: nowrap; color: rgba(255,255,255,0.92); transition: background 0.16s ease, color 0.16s ease; }
-    .top-nav-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
-    .top-nav-link.home-link { background: var(--nav-active); color: #fff; }
-    .top-nav-link.active { background: rgba(241, 173, 22, 0.18); color: #fff0bf; }
-    .home-summary { padding: 22px 0 8px; color: var(--muted); font-size: 0.95rem; line-height: 1.65; }
+    .top-nav-link { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 12px; border-radius: 999px; font-size: 0.9rem; font-weight: 760; white-space: nowrap; color: #111827; transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
+    .top-nav-link:hover { background: #f3f6fb; color: var(--red); }
+    .top-nav-link.active, .top-nav-link.home-link.active { background: var(--red); color: #fff; box-shadow: 0 8px 16px rgba(225, 25, 36, 0.2); }
+    .top-nav-link.home-link { color: var(--red); }
+    .nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: 0 0 auto; }
+    .nav-arrow, .nav-more summary { width: 34px; height: 34px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+    .nav-arrow-left svg { transform: rotate(180deg); }
+    .nav-more { position: relative; flex: 0 0 auto; }
+    .nav-more summary { list-style: none; }
+    .nav-more summary::-webkit-details-marker { display: none; }
+    .nav-more div { position: absolute; right: 0; top: calc(100% + 10px); width: min(280px, 82vw); display: grid; gap: 2px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 22px 44px rgba(16, 24, 40, 0.15); }
+    .nav-more a { padding: 10px 12px; border-radius: 7px; color: var(--ink); font-weight: 700; font-size: 0.92rem; }
+    .nav-more a:hover { background: #f4f7fb; color: var(--red); }
+    .ticker-strip { background: linear-gradient(90deg, #061b34 0%, #0a2647 62%, #05152a 100%); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
+    .ticker-inner { min-height: 38px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; }
+    .ticker-label { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 0 14px; border-radius: 8px; background: var(--red); font-size: 0.82rem; font-weight: 800; white-space: nowrap; }
+    .ticker-track { min-width: 0; overflow: hidden; }
+    .ticker-list { display: flex; align-items: center; gap: 24px; list-style: none; transition: transform 0.28s ease; }
+    .ticker-list li { flex: 0 0 auto; max-width: 430px; color: rgba(255,255,255,0.95); font-size: 0.92rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ticker-list li::before { content: ""; display: inline-block; width: 4px; height: 4px; margin: 0 12px 2px 0; border-radius: 50%; background: #fff; opacity: 0.9; }
+    .ticker-arrow { width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+    .home-spotlight { padding: 28px 0 10px; }
+    .home-carousel { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(105deg, #f7fbff 0%, #ffffff 48%, #edf5ff 100%); box-shadow: 0 20px 45px rgba(15, 38, 70, 0.08); }
+    .home-slides { display: flex; transition: transform 0.42s ease; }
+    .home-slide { min-width: 100%; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr); gap: 18px; align-items: stretch; }
+    .home-slide-copy { padding: 42px 42px 48px; display: grid; align-content: center; gap: 16px; min-height: 340px; }
+    .latest-badge { width: fit-content; display: inline-flex; align-items: center; min-height: 30px; padding: 0 13px; border-radius: 8px; background: var(--red); color: #fff; font-size: 0.82rem; font-weight: 840; }
+    .home-slide h1 { font-size: clamp(1.9rem, 1.35rem + 1.8vw, 3.25rem); line-height: 1.16; font-weight: 850; overflow-wrap: anywhere; }
+    .home-slide p { max-width: 650px; color: #364152; font-size: 1rem; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+    .hero-btn { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border-radius: 7px; padding: 0 16px; border: 1px solid var(--border); background: #fff; color: var(--ink); font-weight: 800; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.06); }
+    .hero-btn.primary { border-color: var(--red); background: var(--red); color: #fff; box-shadow: 0 10px 22px rgba(225, 25, 36, 0.2); }
+    .home-slide-media { min-height: 340px; background: #eaf1f9; display: flex; align-items: stretch; justify-content: center; }
+    .home-slide-media img { width: 100%; height: 100%; min-height: 340px; object-fit: cover; }
+    .slide-empty-image { width: 100%; min-height: 340px; display: grid; place-items: center; background: linear-gradient(135deg, #e9f3ff, #fff6e0); color: var(--accent); font-size: 1.5rem; font-weight: 850; }
+    .slider-controls { position: absolute; left: 42px; bottom: 22px; display: inline-flex; align-items: center; gap: 12px; }
+    .slider-dots { display: inline-flex; align-items: center; gap: 12px; }
+    .slider-dot { width: 8px; height: 8px; border: 0; border-radius: 50%; background: #c6ced9; cursor: pointer; }
+    .slider-dot.active { width: 18px; border-radius: 999px; background: var(--red); }
+    .slide-arrow { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.08); }
+    .slide-arrow.prev svg { transform: rotate(180deg); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-    .section-head h2 { font-size: clamp(1.3rem, 1.1rem + 0.4vw, 1.7rem); line-height: 1.2; letter-spacing: -0.01em; }
+    .section-head h2 { font-size: clamp(1.25rem, 1.04rem + 0.42vw, 1.62rem); line-height: 1.2; font-weight: 850; position: relative; padding-bottom: 10px; }
+    .section-head h2::after { content: ""; position: absolute; left: 0; bottom: 0; width: 34px; height: 2px; border-radius: 999px; background: var(--red); }
     .section-head p { color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
-    .home-spotlight { padding: 18px 0 10px; }
-    .spotlight-card { display: grid; gap: 0; background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%); border: 1px solid var(--border); border-radius: 20px; overflow: hidden; box-shadow: 0 18px 38px rgba(14, 24, 45, 0.08); }
-    .spotlight-media { background: #eaf0f8; }
-    .spotlight-media img { width: 100%; height: 100%; min-height: 260px; aspect-ratio: 16 / 9; object-fit: cover; }
-    .spotlight-copy { padding: 22px; display: grid; gap: 12px; align-content: center; }
-    .spotlight-copy h1 { font-size: clamp(1.7rem, 1.28rem + 1vw, 2.9rem); line-height: 1.2; letter-spacing: -0.02em; }
-    .spotlight-copy p { color: var(--muted); font-size: 1rem; line-height: 1.72; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+    .section-link { min-height: 36px; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--ink); font-size: 0.9rem; font-weight: 800; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.05); }
     .meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.84rem; }
     .meta-pill { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: rgba(10, 91, 119, 0.08); color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
-    .post-grid-section { padding: 18px 0 46px; }
+    .post-grid-section { padding: 22px 0 46px; }
     .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-    .post-card { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: #fff; display: grid; align-content: start; box-shadow: 0 10px 26px rgba(14, 24, 45, 0.05); }
+    .post-card { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; display: grid; align-content: start; box-shadow: 0 10px 24px rgba(15, 38, 70, 0.07); transition: transform 0.16s ease, box-shadow 0.16s ease; }
+    .post-card:hover { transform: translateY(-2px); box-shadow: 0 16px 30px rgba(15, 38, 70, 0.1); }
     .post-card img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
-    .post-card-body { padding: 16px 16px 18px; display: grid; gap: 10px; align-content: start; min-height: 100%; }
-    .kicker { color: var(--accent); font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
-    .post-card h2 { font-size: 1.08rem; line-height: 1.48; letter-spacing: -0.01em; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .post-card-body { padding: 14px 14px 16px; display: grid; gap: 10px; align-content: start; min-height: 100%; }
+    .kicker { color: var(--red); font-size: 0.76rem; font-weight: 850; text-transform: uppercase; letter-spacing: 0.04em; }
+    .post-card h2 { font-size: 1.02rem; line-height: 1.48; font-weight: 800; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 3.02em; }
     .post-card p { color: var(--muted); line-height: 1.68; font-size: 0.92rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 4.7em; }
     .date { color: #5f6368; font-size: 0.82rem; }
     .byline a { color: var(--accent); font-weight: 600; }
-    .article-card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.83rem; }
+    .article-card-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 0.8rem; }
+    .article-card-meta span { display: inline-flex; align-items: center; gap: 5px; }
+    .article-card-meta svg { width: 14px; height: 14px; }
     .article-card-meta span::after { content: "•"; margin-left: 10px; color: #c2c8d2; }
     .article-card-meta span:last-child::after { content: ""; margin: 0; }
     .empty { padding: 48px 0; color: var(--muted); line-height: 1.7; }
@@ -1645,20 +1682,38 @@ function publicStyles() {
     .profile-head h1 { font-size: clamp(1.75rem, 1.5rem + 1vw, 2.6rem); line-height: 1.1; }
     .profile-head p { color: var(--muted); line-height: 1.7; margin-top: 6px; max-width: 680px; }
     .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
-    @media (min-width: 860px) { .spotlight-card { grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr); } .spotlight-media { order: 2; } .spotlight-copy { order: 1; padding: 28px; } }
     @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
-    @media (min-width: 1100px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
+    @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
     @media (max-width: 820px) {
-      .header-top-inner { grid-template-columns: auto 1fr; min-height: 72px; gap: 12px; padding: 10px 0; }
+      .header-top-inner { display: grid; grid-template-columns: auto 1fr auto; min-height: 64px; gap: 10px; padding: 8px 0; }
+      .mobile-menu-anchor { grid-column: 1; grid-row: 1; }
+      .brand-mark { grid-column: 2; grid-row: 1; }
+      .header-search { grid-column: 3; grid-row: 1; margin-left: 0; }
+      .section-nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1fr) auto auto; }
+      .nav-arrow-left { display: none; }
       .mobile-menu-anchor { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; color: var(--text); font-size: 1.28rem; }
       .brand-logo { height: 42px; }
-      .header-ad-slot { display: none; }
-      .top-nav-link { min-height: 42px; padding: 0 14px; font-size: 0.92rem; }
+      .top-nav-link { min-height: 38px; padding: 0 11px; font-size: 0.88rem; }
+      .ticker-inner { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; min-height: 36px; }
+      .ticker-label { min-height: 26px; padding: 0 10px; font-size: 0.76rem; }
+      .ticker-list { gap: 0; }
+      .ticker-list li { width: calc(100vw - 130px); max-width: none; font-size: 0.84rem; }
+      .home-spotlight { padding-top: 16px; }
+      .home-slide { grid-template-columns: 1fr; }
+      .home-slide-copy { min-height: auto; padding: 22px 18px 60px; }
+      .home-slide-media { min-height: 220px; order: -1; }
+      .home-slide-media img, .slide-empty-image { min-height: 220px; }
+      .slider-controls { left: 18px; bottom: 16px; }
       .hero { padding: 20px 0 14px; }
-      .spotlight-copy { padding: 18px; }
     }
     @media (max-width: 620px) {
       .wrap { width: min(1240px, calc(100% - 18px)); }
+      .header-search { width: 38px; height: 38px; border-radius: 11px; }
+      .nav-more div { right: -44px; }
+      .hero-actions { gap: 8px; }
+      .hero-btn { width: 100%; min-height: 40px; }
+      .home-slide h1 { font-size: 1.55rem; line-height: 1.24; }
+      .home-slide p { font-size: 0.92rem; }
       .post-card-body { padding: 14px 14px 16px; }
       .post-card h2 { font-size: 1rem; line-height: 1.5; }
       .post-card p { font-size: 0.9rem; }
@@ -1677,21 +1732,60 @@ type PublicShellOptions = {
   isHome?: boolean;
 };
 
-function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlug?: string | null; isHome?: boolean } = {}) {
-  if (!categories.length) {
-    return '';
-  }
+function renderPublicIcon(name: string) {
+  const icons: Record<string, string> = {
+    home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h14v-9.5"/><path d="M9.5 20v-6h5v6"/></svg>',
+    job: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7"/><path d="M4 8h16v11H4z"/><path d="M4 13h16"/><path d="M10 12h4"/></svg>',
+    admit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8"/><path d="M8 13h5"/><path d="M16 15l2 2 3-4"/></svg>',
+    result: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 20V9"/><path d="M12 20V4"/><path d="M17 20v-7"/><path d="M4 20h16"/></svg>',
+    syllabus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a4 4 0 0 1 4 4v12H9a4 4 0 0 0-4-4z"/><path d="M5 4v12"/><path d="M9 8h6"/><path d="M9 12h5"/></svg>',
+    answer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19h.01"/><path d="M9.5 9a2.7 2.7 0 1 1 4.2 2.25c-.96.62-1.7 1.18-1.7 2.75"/><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/></svg>',
+    current: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/><path d="M8 14h3"/><path d="M13 14h3"/></svg>',
+    contact: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="m5 7 7 6 7-6"/><path d="M8 17h8"/></svg>',
+    search: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 20-4.5-4.5"/><circle cx="11" cy="11" r="6"/></svg>',
+    bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 1 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
+    arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>',
+    menu: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>',
+    tag: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11V4h7l9 9-7 7z"/><path d="M8 8h.01"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v10H3z"/></svg>',
+  };
+  return icons[name] || icons.tag;
+}
 
+function categoryIconName(categoryName: string) {
+  const value = categoryName.toLowerCase();
+  if (/admit|card|hall|प्रवेश/i.test(value)) return 'admit';
+  if (/result|रिजल्ट/i.test(value)) return 'result';
+  if (/syllabus|सिलेबस/i.test(value)) return 'syllabus';
+  if (/answer|key|आंसर/i.test(value)) return 'answer';
+  if (/current|affairs|करेंट/i.test(value)) return 'current';
+  if (/contact|संपर्क/i.test(value)) return 'contact';
+  if (/job|naukri|vacancy|recruit|bharti|सरकारी|नौकरी/i.test(value)) return 'job';
+  return 'tag';
+}
+
+function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlug?: string | null; isHome?: boolean } = {}) {
   const activeCategorySlug = options.activeCategorySlug || '';
   const homeClass = options.isHome ? ' active' : '';
   const links = categories
     .map((category) => {
       const activeClass = category.slug === activeCategorySlug ? ' active' : '';
-      return `<a class="top-nav-link${activeClass}" href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`;
+      return `<a class="top-nav-link${activeClass}" href="/category/${escapeHtml(category.slug)}"><span class="nav-icon">${renderPublicIcon(categoryIconName(category.name))}</span><span>${escapeHtml(category.name)}</span></a>`;
     })
     .join('');
+  const moreLinks = categories
+    .map((category) => `<a href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`)
+    .join('');
 
-  return `<nav class="section-nav" aria-label="Primary categories"><div class="wrap nav-scroll" id="top-nav"><a class="top-nav-link home-link${homeClass}" href="/">होम</a>${links}</div></nav>`;
+  return `<nav class="section-nav" aria-label="Primary categories">
+    <button class="nav-arrow nav-arrow-left" type="button" data-nav-scroll="-1" aria-label="Previous categories">${renderPublicIcon('arrow')}</button>
+    <div class="nav-scroll" id="top-nav">
+      <a class="top-nav-link home-link${homeClass}" href="/"><span class="nav-icon">${renderPublicIcon('home')}</span><span>होम</span></a>${links}
+    </div>
+    <button class="nav-arrow" type="button" data-nav-scroll="1" aria-label="More categories">${renderPublicIcon('arrow')}</button>
+    ${categories.length ? `<details class="nav-more"><summary aria-label="Open category menu">${renderPublicIcon('menu')}</summary><div>${moreLinks}</div></details>` : ''}
+  </nav>`;
 }
 
 function publicShell(title: string, description: string, content: string, headExtras = '', options: PublicShellOptions = {}) {
@@ -1721,15 +1815,72 @@ function publicShell(title: string, description: string, content: string, headEx
         <a class="brand-mark" href="/" aria-label="Hindiline home">
           <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
         </a>
-        <div class="header-ad-slot" aria-hidden="true"></div>
+        ${navMarkup}
+        <a class="header-search" href="/" aria-label="Search Hindiline">${renderPublicIcon('search')}</a>
       </div>
     </div>
-    ${navMarkup}
   </header>
   ${content}
   <footer class="site-footer"><div class="wrap">Hindiline &copy; ${new Date().getFullYear()}</div></footer>
+  <script>${publicEnhancementScript()}</script>
 </body>
 </html>`;
+}
+
+function publicEnhancementScript() {
+  return `
+    (() => {
+      const nav = document.getElementById('top-nav');
+      document.querySelectorAll('[data-nav-scroll]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (!nav) return;
+          const dir = Number(button.getAttribute('data-nav-scroll')) || 1;
+          nav.scrollBy({ left: dir * Math.max(220, nav.clientWidth * 0.7), behavior: 'smooth' });
+        });
+      });
+
+      const ticker = document.querySelector('.ticker-list');
+      const tickerItems = ticker ? Array.from(ticker.children) : [];
+      let tickerIndex = 0;
+      const moveTicker = () => {
+        if (!ticker || !tickerItems.length) return;
+        const item = tickerItems[tickerIndex];
+        ticker.style.transform = 'translateX(-' + item.offsetLeft + 'px)';
+      };
+      document.querySelectorAll('[data-ticker-next]').forEach((button) => {
+        button.addEventListener('click', () => {
+          tickerIndex = tickerItems.length ? (tickerIndex + 1) % tickerItems.length : 0;
+          moveTicker();
+        });
+      });
+      if (tickerItems.length > 1) {
+        setInterval(() => {
+          tickerIndex = (tickerIndex + 1) % tickerItems.length;
+          moveTicker();
+        }, 4200);
+      }
+
+      const carousel = document.querySelector('[data-home-carousel]');
+      if (!carousel) return;
+      const track = carousel.querySelector('.home-slides');
+      const slides = track ? Array.from(track.children) : [];
+      const dots = Array.from(carousel.querySelectorAll('[data-slide-dot]'));
+      let slideIndex = 0;
+      const showSlide = (nextIndex) => {
+        if (!track || !slides.length) return;
+        slideIndex = (nextIndex + slides.length) % slides.length;
+        track.style.transform = 'translateX(-' + (slideIndex * 100) + '%)';
+        dots.forEach((dot, index) => dot.classList.toggle('active', index === slideIndex));
+      };
+      carousel.querySelectorAll('[data-slide-dir]').forEach((button) => {
+        button.addEventListener('click', () => showSlide(slideIndex + Number(button.getAttribute('data-slide-dir'))));
+      });
+      dots.forEach((dot, index) => dot.addEventListener('click', () => showSlide(index)));
+      if (slides.length > 1) {
+        setInterval(() => showSlide(slideIndex + 1), 5200);
+      }
+    })();
+  `;
 }
 
 function escapeJsonForHtml(value: unknown) {
@@ -1910,6 +2061,67 @@ function renderArticleShareButtons(canonicalUrl: string, title: string) {
   </div>`;
 }
 
+function renderHomeTrendingStrip(articles: PublicArticleRow[]) {
+  const items = articles.slice(0, 4);
+  if (!items.length) {
+    return '';
+  }
+
+  return `<section class="ticker-strip" aria-label="Trending news">
+    <div class="wrap ticker-inner">
+      <span class="ticker-label">ट्रेंडिंग न्यूज</span>
+      <div class="ticker-track">
+        <ul class="ticker-list">
+          ${items.map((article) => `<li><a href="/${escapeHtml(article.slug)}">${escapeHtml(limitTextWords(article.title, 12))}</a></li>`).join('')}
+        </ul>
+      </div>
+      <button class="ticker-arrow" type="button" data-ticker-next aria-label="Next trending news">${renderPublicIcon('arrow')}</button>
+    </div>
+  </section>`;
+}
+
+function renderHomeSlide(article: PublicArticleRow, index: number) {
+  const image = article.featured_image_url
+    ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 1080 : 860, 72))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 820px) calc(100vw - 18px), 52vw" width="1080" height="608" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
+    : '<div class="slide-empty-image">Hindiline Update</div>';
+  const summary = limitTextWords(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.', 24);
+
+  return `<article class="home-slide">
+    <div class="home-slide-copy">
+      <span class="latest-badge">लेटेस्ट अपडेट</span>
+      <h1>${escapeHtml(article.title)}</h1>
+      <p>${escapeHtml(summary)}</p>
+      <div class="hero-actions">
+        <a class="hero-btn primary" href="/${escapeHtml(article.slug)}">पूरी जानकारी पढ़ें ${renderPublicIcon('arrow')}</a>
+        <a class="hero-btn" href="/${escapeHtml(article.slug)}#notification">नोटिफिकेशन देखें ${renderPublicIcon('bell')}</a>
+      </div>
+    </div>
+    <div class="home-slide-media">${image}</div>
+  </article>`;
+}
+
+function renderHomeCarousel(articles: PublicArticleRow[]) {
+  const slides = articles.slice(0, 4);
+  if (!slides.length) {
+    return '';
+  }
+
+  const dots = slides
+    .map((_, index) => `<button class="slider-dot${index === 0 ? ' active' : ''}" type="button" data-slide-dot aria-label="Show update ${index + 1}"></button>`)
+    .join('');
+
+  return `<section class="wrap home-spotlight">
+    <div class="home-carousel" data-home-carousel>
+      <div class="home-slides">${slides.map(renderHomeSlide).join('')}</div>
+      ${slides.length > 1 ? `<div class="slider-controls">
+        <button class="slide-arrow prev" type="button" data-slide-dir="-1" aria-label="Previous update">${renderPublicIcon('arrow')}</button>
+        <div class="slider-dots">${dots}</div>
+        <button class="slide-arrow" type="button" data-slide-dir="1" aria-label="Next update">${renderPublicIcon('arrow')}</button>
+      </div>` : ''}
+    </div>
+  </section>`;
+}
+
 function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean; compactMeta?: boolean } = {}) {
   const eager = Boolean(options.eager);
   const compactMeta = Boolean(options.compactMeta);
@@ -1921,8 +2133,8 @@ function renderPublicPostCard(article: PublicArticleRow, options: { eager?: bool
   const summary = limitTextWords(article.excerpt || article.seo_description || '', 35);
   const metaRow = compactMeta
     ? `<div class="article-card-meta">
-        <span>${escapeHtml(article.author_name || 'Hindiline')}</span>
-        <span>${escapeHtml(formatRelativeTimeLabel(article.created_at || article.updated_at))}</span>
+        <span>${renderPublicIcon('current')} ${escapeHtml(formatDateLabel(article.updated_at).split(',')[0])}</span>
+        <span>${renderPublicIcon('folder')} ${escapeHtml(article.category || 'अपडेट')}</span>
         <span>${escapeHtml(`${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`)}</span>
       </div>`
     : `<div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>`;
@@ -1939,39 +2151,28 @@ function renderPublicPostCard(article: PublicArticleRow, options: { eager?: bool
 }
 
 function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
-  const [featuredArticle, ...recentArticles] = articles;
-  const spotlight = featuredArticle
-    ? `<section class="wrap home-summary">Hindi mein latest updates, explainers aur practical guides. Seedha useful information, clean layout ke saath.</section>
-      <section class="wrap home-spotlight">
-        <a class="spotlight-card" href="/${escapeHtml(featuredArticle.slug)}">
-          <div class="spotlight-media">${featuredArticle.featured_image_url ? `<img src="${escapeHtml(optimizedImageUrl(featuredArticle.featured_image_url, 960, 72))}" srcset="${escapeHtml(featuredImageSrcset(featuredArticle.featured_image_url))}" sizes="(max-width: 859px) calc(100vw - 24px), 52vw" width="1080" height="608" alt="${escapeHtml(featuredArticle.featured_image_alt || featuredArticle.title)}" loading="eager" fetchpriority="high" decoding="async" />` : ''}</div>
-          <div class="spotlight-copy">
-            <div class="meta-row"><span class="meta-pill">${escapeHtml(featuredArticle.category || 'Latest')}</span><span>${escapeHtml(formatRelativeTimeLabel(featuredArticle.created_at || featuredArticle.updated_at))}</span></div>
-            <h1>${escapeHtml(featuredArticle.title)}</h1>
-            <p>${escapeHtml(limitTextWords(featuredArticle.excerpt || featuredArticle.seo_description || 'Read the latest update on Hindiline.', 35))}</p>
-          </div>
-        </a>
-      </section>`
-    : '';
+  const spotlight = renderHomeCarousel(articles);
+  const trending = renderHomeTrendingStrip(articles);
+  const recentArticles = articles.slice(1, 5);
   const recent = recentArticles.length
-    ? `<section class="wrap post-grid-section">
+    ? `<section class="wrap post-grid-section" id="recent-news">
         <div class="section-head">
           <div>
             <h2>हाल में जोड़े गए लेख</h2>
-            <p>Latest published articles ek jagah, consistent reading experience ke saath.</p>
           </div>
+          <a class="section-link" href="/">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
         </div>
         <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')}</div>
       </section>`
     : '';
-  const empty = !featuredArticle
+  const empty = !articles.length
     ? `<section class="wrap empty">Abhi koi published blog nahi hai. Admin panel se generated draft ko publish karte hi yahan article live dikhega.</section>`
     : '';
 
   return publicShell(
     'Hindiline - Latest Blogs and Updates',
     'Hindiline par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
-    `${spotlight}${recent}${empty}`,
+    `${trending}${spotlight}${recent}${empty}`,
     '',
     { categories, isHome: true },
   );

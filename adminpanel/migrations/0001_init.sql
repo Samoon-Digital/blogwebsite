@@ -12,6 +12,6 @@ VALUES (
   'super-admin',
   'samoondigital',
   'Samoon Digital',
-  'fb038747ce88efce26564e515f926cf8ca6f9844a6311c97a436e11cf2251e60',
+  '778bfdfaf9bd7f4cebcdc2bb6b6be9ac4e15bd16704ce1e8ed2bd8ad94c620f8',
   'super_admin'
 );
