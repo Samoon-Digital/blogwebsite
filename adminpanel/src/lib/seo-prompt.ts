@@ -252,12 +252,14 @@ Generate JSON-LD schema markup for:
 ${schemaTypes.map((type) => `- ${type}`).join('\n')}
 
 Key schemas to implement:
-- **Article Schema**: Metadata about the blog post (headline, datePublished, author, description)
+- **NewsArticle Schema**: Present every article as a news-style article with headline, datePublished, dateModified, author, publisher, description, and mainEntityOfPage
 - **BreadcrumbList Schema**: Navigation hierarchy for better crawling
 - **FAQPageSchema**: FAQ section with questions and answers
 - **OrganizationSchema**: Your organization/website information
-- **NewsArticleSchema**: For news-style content
-- **BlogPosting Schema**: Standard blog post metadata
+- **ImageObject Schema**: Include featured image and every useful inline image with URL/contentUrl, alt/description, caption, width and height when known
+- **Speakable Schema**: Add speakable selectors for the H1, dek/summary and first useful paragraph where applicable
+- **WebSite SearchAction**: Website schema should support site search with a query input
+- **JobPosting Schema**: For jobs/vacancy/recruitment category articles, include a careful JobPosting schema based only on facts in the article
 
 ### 3. Keyword Research & Optimization
 ${config.keyword_focus || 'Primary keyword should appear naturally in first 100 words of blog.'}
@@ -352,8 +354,7 @@ ${controls.includeInternalLinks ? 'Add inline internal links to related articles
 - Add links inside paragraphs naturally, not only at the bottom.
 - If related articles are available, include at least 2 natural inline internal links in the body when possible.
 - Do not leave the article body without inline internal links when relevant related articles are provided.
-- Also end the article with a clear related-articles CTA block using this exact wrapper: <div class="internal-links"><h3>...</h3><p>...</p><ul>...</ul></div>
-- The CTA block should recommend 3-5 actually relevant related articles from the provided list.
+- Do not output a bottom related-articles CTA block and do not use the wrapper <div class="internal-links">. The backend will append one clean related block automatically.
 - Internal article links must use the exact provided slug paths like "/article-slug", never "/articles/article-slug".
 
 ### 11B. External Linking
@@ -408,7 +409,7 @@ Return ONLY valid JSON with this exact structure:
   "meta_description": "Meta description (150-160 chars)",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
-  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>ऐसे ही जुड़े लेख</h3><p>Is topic se jude aur updates ke liye ye articles bhi padhein:</p><ul><li><a href=\"/article-slug\">Article Title</a></li></ul></div>",
+  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div>",
   "inline_images": [
     {
       "name": "Short image name",

@@ -50,6 +50,7 @@ type ArticleRow = {
   author_slug?: string | null;
   author_bio?: string | null;
   author_image_url?: string | null;
+  author_job_title?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -73,6 +74,7 @@ type PublicArticleRow = {
   author_slug?: string | null;
   author_bio?: string | null;
   author_image_url?: string | null;
+  author_job_title?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -106,9 +108,19 @@ type AuthorRow = {
   name: string;
   slug: string;
   bio: string | null;
+  job_title: string | null;
   image_url: string | null;
   image_object_key: string | null;
   is_default: number | string;
+  created_at: string;
+  updated_at: string;
+};
+
+type SitemapArticleRow = {
+  title: string;
+  slug: string;
+  category: string | null;
+  canonical_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -201,6 +213,14 @@ const PUBLIC_SITE_ORIGIN = 'https://hindiline.com';
 const PUBLIC_LOGO_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-320.png`;
 const PUBLIC_FAVICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-64.png`;
 const PUBLIC_APPLE_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
+const PUBLIC_SITE_NAME = 'Hindiline';
+const PUBLIC_SITE_NAME_HI = 'हिंदीलाइन';
+const PUBLIC_PUBLISHER_NAME = 'Samoon Digital Private Limited';
+const HOMEPAGE_SEO_TITLE = 'हिंदीलाइन - सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट और सरकारी योजनाएं';
+const HOMEPAGE_META_DESCRIPTION = 'हिंदीलाइन पर सरकारी नौकरी, नई भर्ती, एडमिट कार्ड, रिजल्ट, परीक्षा तिथि, उत्तर कुंजी और सरकारी योजनाओं की ताजा व विश्वसनीय जानकारी पढ़ें।';
+const HOMEPAGE_SCHEMA_DESCRIPTION = 'हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, परीक्षा अपडेट और सरकारी विभागों से जुड़ी महत्वपूर्ण जानकारी सबसे पहले पढ़ें।';
+const JOBS_CATEGORY_SEO_TITLE = 'सरकारी नौकरी 2026 - नई भर्ती, सरकारी वैकेंसी और जॉब अपडेट';
+const JOBS_CATEGORY_SEO_DESCRIPTION = 'केंद्र और राज्य सरकार की नई भर्तियां, रेलवे, SSC, बैंक, पुलिस, शिक्षक और अन्य सरकारी नौकरी की ताजा जानकारी यहां पढ़ें।';
 
 function publicArticleUrl(slug: string) {
   return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
@@ -261,6 +281,15 @@ function escapeHtml(value: string) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function escapeXml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
 function normalizeText(value: unknown) {
@@ -823,7 +852,7 @@ function normalizeArticleContent(content: string) {
 }
 
 function stripInternalLinksBlock(content: string) {
-  return content.replace(/\s*<div class="internal-links">[\s\S]*?<\/div>\s*$/i, '\n').trim();
+  return content.replace(/\s*<div\b[^>]*class=["'][^"']*\binternal-links\b[^"']*["'][^>]*>[\s\S]*?<\/div>\s*/gi, '\n').trim();
 }
 
 function normalizeLegacyInternalArticlePaths(content: string) {
@@ -1558,6 +1587,10 @@ async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
   }
 }
 
+function articleSelectColumns(contentExpression = 'articles.content', includeStatus = false) {
+  return `articles.id, articles.title, articles.slug, articles.excerpt, ${contentExpression} AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, ${includeStatus ? 'articles.status,' : ''} articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, authors.job_title AS author_job_title, articles.created_at, articles.updated_at`;
+}
+
 async function readArticles(
   db: D1Database,
   options: { q?: string; category?: string; page?: number; perPage?: number } = {},
@@ -1596,7 +1629,7 @@ async function readArticles(
   const articles = await queryAll<ArticleRow>(
     db
       .prepare(
-        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+        `SELECT ${articleSelectColumns("''", true)}
          FROM articles
          LEFT JOIN authors ON authors.id = articles.author_id
          ${whereSql}
@@ -1612,7 +1645,7 @@ async function readArticles(
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT 12",
+      `SELECT ${articleSelectColumns()} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT 12`,
     ),
   );
 }
@@ -1620,10 +1653,37 @@ async function readPublishedArticles(db: D1Database) {
 async function readPublishedArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.slug = ? AND articles.status = 'published' LIMIT 1",
+      `SELECT ${articleSelectColumns()} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.slug = ? AND articles.status = 'published' LIMIT 1`,
     )
     .bind(slug)
     .first<PublicArticleRow>();
+}
+
+async function readPublishedArticlesForSitemap(db: D1Database, recentNewsOnly = false) {
+  const where = recentNewsOnly
+    ? "WHERE status = 'published' AND datetime(created_at) >= datetime('now', '-2 days')"
+    : "WHERE status = 'published'";
+  const limit = recentNewsOnly ? ' LIMIT 1000' : '';
+  return queryAll<SitemapArticleRow>(
+    db.prepare(
+      `SELECT title, slug, category, canonical_url, created_at, updated_at FROM articles ${where} ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, rowid DESC${limit}`,
+    ),
+  );
+}
+
+async function readPublishedArticlesBySearch(db: D1Database, query: string) {
+  const q = normalizeText(query);
+  if (!q) {
+    return [];
+  }
+  const like = `%${q}%`;
+  return queryAll<PublicArticleRow>(
+    db
+      .prepare(
+        `SELECT ${articleSelectColumns("''")} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND (articles.title LIKE ? OR articles.excerpt LIKE ? OR articles.category LIKE ? OR articles.seo_description LIKE ?) ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT 24`,
+      )
+      .bind(like, like, like, like),
+  );
 }
 
 async function readCategoryBySlug(db: D1Database, slug: string) {
@@ -1644,7 +1704,7 @@ async function readPublishedArticlesByCategory(db: D1Database, categoryName: str
   return queryAll<PublicArticleRow>(
     db
       .prepare(
-        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+        `SELECT ${articleSelectColumns("''")} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24`,
       )
       .bind(categoryName),
   );
@@ -1652,7 +1712,7 @@ async function readPublishedArticlesByCategory(db: D1Database, categoryName: str
 
 async function readAuthorBySlug(db: D1Database, slug: string) {
   return db
-    .prepare('SELECT id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at FROM authors WHERE slug = ? LIMIT 1')
+    .prepare('SELECT id, name, slug, bio, job_title, image_url, image_object_key, is_default, created_at, updated_at FROM authors WHERE slug = ? LIMIT 1')
     .bind(slug)
     .first<AuthorRow>();
 }
@@ -1661,7 +1721,7 @@ async function readPublishedArticlesByAuthor(db: D1Database, authorId: string) {
   return queryAll<PublicArticleRow>(
     db
       .prepare(
-        "SELECT articles.id, articles.title, articles.slug, articles.excerpt, '' AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.author_id = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24",
+        `SELECT ${articleSelectColumns("''")} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.author_id = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24`,
       )
       .bind(authorId),
   );
@@ -1670,7 +1730,7 @@ async function readPublishedArticlesByAuthor(db: D1Database, authorId: string) {
 async function readArticleById(db: D1Database, id: string) {
   return db
     .prepare(
-      'SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.id = ? LIMIT 1',
+      `SELECT ${articleSelectColumns('articles.content', true)} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.id = ? LIMIT 1`,
     )
     .bind(id)
     .first<ArticleRow>();
@@ -1692,7 +1752,7 @@ async function readCategories(db: D1Database) {
 
 async function readAuthors(db: D1Database) {
   return queryAll<AuthorRow>(
-    db.prepare('SELECT id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at FROM authors ORDER BY is_default DESC, name ASC'),
+    db.prepare('SELECT id, name, slug, bio, job_title, image_url, image_object_key, is_default, created_at, updated_at FROM authors ORDER BY is_default DESC, name ASC'),
   );
 }
 
@@ -2333,6 +2393,7 @@ function publicShell(title: string, description: string, content: string, headEx
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
+  <meta property="og:site_name" content="${escapeHtml(PUBLIC_SITE_NAME)}" />
   <link rel="icon" type="image/png" sizes="64x64" href="${escapeHtml(PUBLIC_FAVICON_URL)}" />
   <link rel="apple-touch-icon" href="${escapeHtml(PUBLIC_APPLE_ICON_URL)}" />
   ${analyticsTag}
@@ -2349,7 +2410,7 @@ function publicShell(title: string, description: string, content: string, headEx
           <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
         </a>
         ${navMarkup}
-        <a class="header-search" href="/" aria-label="Search Hindiline">${renderPublicIcon('search')}</a>
+        <a class="header-search" href="/search" aria-label="Search Hindiline">${renderPublicIcon('search')}</a>
       </div>
     </div>
   </header>
@@ -2443,7 +2504,8 @@ function organizationJsonLd() {
   return {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    name: 'Hindiline',
+    name: PUBLIC_PUBLISHER_NAME,
+    alternateName: [PUBLIC_SITE_NAME, PUBLIC_SITE_NAME_HI],
     url: PUBLIC_SITE_ORIGIN,
     logo: {
       '@type': 'ImageObject',
@@ -2456,12 +2518,19 @@ function websiteJsonLd() {
   return {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
-    name: 'Hindiline',
+    name: PUBLIC_SITE_NAME,
+    alternateName: PUBLIC_SITE_NAME_HI,
+    description: HOMEPAGE_SCHEMA_DESCRIPTION,
     url: PUBLIC_SITE_ORIGIN,
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: `${PUBLIC_SITE_ORIGIN}/search?q={search_term_string}`,
+      'query-input': 'required name=search_term_string',
+    },
   };
 }
 
-function personJsonLd(author: Pick<AuthorRow, 'name' | 'slug' | 'bio' | 'image_url'>) {
+function personJsonLd(author: Pick<AuthorRow, 'name' | 'slug' | 'bio' | 'image_url' | 'job_title'>) {
   return {
     '@context': 'https://schema.org',
     '@type': 'Person',
@@ -2469,30 +2538,157 @@ function personJsonLd(author: Pick<AuthorRow, 'name' | 'slug' | 'bio' | 'image_u
     url: publicAuthorUrl(author.slug),
     description: author.bio || undefined,
     image: author.image_url || undefined,
+    jobTitle: author.job_title || 'Editor',
+    worksFor: {
+      '@type': 'Organization',
+      name: PUBLIC_PUBLISHER_NAME,
+      url: PUBLIC_SITE_ORIGIN,
+    },
   };
 }
 
-function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
-  const image = article.featured_image_url || undefined;
-  const isNews = /news|government|railway|education|vacancy|bharti|exam|result|admit/i.test(article.category || article.title);
+function decodeHtmlAttribute(value: string) {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function extractTagAttribute(tagHtml: string, attribute: string) {
+  const match = tagHtml.match(new RegExp(`\\b${attribute}=(["'])(.*?)\\1`, 'i'));
+  return match?.[2] ? decodeHtmlAttribute(match[2]) : '';
+}
+
+function buildImageObject(url: string, options: { caption?: string; alt?: string; width?: number; height?: number; representative?: boolean } = {}) {
+  const absoluteUrl = resolveSourceUrl(PUBLIC_SITE_ORIGIN, url);
+  if (!absoluteUrl) {
+    return null;
+  }
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'ImageObject',
+    url: absoluteUrl,
+    contentUrl: absoluteUrl,
+    caption: options.caption || options.alt || undefined,
+    description: options.alt || options.caption || undefined,
+    width: options.width || undefined,
+    height: options.height || undefined,
+    representativeOfPage: options.representative || undefined,
+  };
+}
+
+function articleImageObjects(article: PublicArticleRow | ArticleRow) {
+  const images: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const pushImage = (image: Record<string, unknown> | null) => {
+    if (!image) {
+      return;
+    }
+    const url = typeof image.url === 'string' ? image.url : '';
+    if (!url || seen.has(url)) {
+      return;
+    }
+    seen.add(url);
+    images.push(image);
+  };
+
+  if (article.featured_image_url) {
+    pushImage(buildImageObject(article.featured_image_url, {
+      alt: article.featured_image_alt || article.title,
+      caption: article.featured_image_alt || article.title,
+      width: 1200,
+      height: 675,
+      representative: true,
+    }));
+  }
+
+  const figureRegex = /<figure\b[^>]*>[\s\S]*?<img\b[^>]*>[\s\S]*?<\/figure>/gi;
+  for (const match of article.content.matchAll(figureRegex)) {
+    const figureHtml = match[0];
+    const imageTag = figureHtml.match(/<img\b[^>]*>/i)?.[0] || '';
+    const src = extractTagAttribute(imageTag, 'src');
+    const caption = stripHtml(figureHtml.match(/<figcaption\b[^>]*>[\s\S]*?<\/figcaption>/i)?.[0] || '');
+    const width = Number(extractTagAttribute(imageTag, 'width')) || undefined;
+    const height = Number(extractTagAttribute(imageTag, 'height')) || undefined;
+    pushImage(buildImageObject(src, {
+      alt: extractTagAttribute(imageTag, 'alt') || caption || article.title,
+      caption,
+      width,
+      height,
+    }));
+  }
+
+  for (const match of article.content.matchAll(/<img\b[^>]*>/gi)) {
+    const imageTag = match[0];
+    pushImage(buildImageObject(extractTagAttribute(imageTag, 'src'), {
+      alt: extractTagAttribute(imageTag, 'alt') || article.title,
+      width: Number(extractTagAttribute(imageTag, 'width')) || undefined,
+      height: Number(extractTagAttribute(imageTag, 'height')) || undefined,
+    }));
+  }
+
+  return images;
+}
+
+function jobPostingJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
+  if (!isVacancyArticle(article.category, article.title)) {
+    return null;
+  }
+
+  const description = limitTextWords(article.seo_description || article.excerpt || stripHtml(article.content || ''), 120) || `Latest job update for ${article.title}.`;
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'JobPosting',
+    title: article.title,
+    description,
+    datePosted: (article.created_at || article.updated_at || '').slice(0, 10) || undefined,
+    hiringOrganization: {
+      '@type': 'Organization',
+      name: article.category || 'Official recruiting organization',
+      sameAs: canonicalUrl,
+    },
+    applicantLocationRequirements: {
+      '@type': 'Country',
+      name: 'India',
+    },
+    mainEntityOfPage: canonicalUrl,
+    url: canonicalUrl,
+  };
+}
+
+function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string, images: Array<Record<string, unknown>>) {
   const authorSlug = article.author_slug || slugify(article.author_name || 'samoon-digital') || 'samoon-digital';
   return {
     '@context': 'https://schema.org',
-    '@type': isNews ? 'NewsArticle' : 'BlogPosting',
+    '@type': 'NewsArticle',
     headline: article.seo_title || article.title,
     description: article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
-    image,
+    image: images.length ? images : (article.featured_image_url ? [article.featured_image_url] : undefined),
     datePublished: article.created_at,
     dateModified: article.updated_at,
     author: {
       '@type': 'Person',
       name: article.author_name || 'Samoon Digital',
       url: publicAuthorUrl(authorSlug),
+      image: article.author_image_url || undefined,
+      jobTitle: article.author_job_title || 'Editor',
+      worksFor: {
+        '@type': 'Organization',
+        name: PUBLIC_PUBLISHER_NAME,
+        url: PUBLIC_SITE_ORIGIN,
+      },
     },
     publisher: organizationJsonLd(),
     mainEntityOfPage: {
       '@type': 'WebPage',
       '@id': canonicalUrl,
+    },
+    speakable: {
+      '@type': 'SpeakableSpecification',
+      cssSelector: ['.article-head h1', '.article-head .dek', '.content p:first-of-type'],
     },
   };
 }
@@ -2536,11 +2732,13 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   const image = article.featured_image_url || '';
   const articleVideoUrl = extractArticleVideoUrl(article.content || '');
   const videoSchema = videoObjectJsonLd(article, canonicalUrl, articleVideoUrl);
+  const imageSchemas = articleImageObjects(article);
+  const jobSchema = jobPostingJsonLd(article, canonicalUrl);
   const imagePreload = image
     ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 960))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 780px) calc(100vw - 24px), 760px" fetchpriority="high" />`
     : '';
   const schemaObjects = [
-    articleJsonLd(article, canonicalUrl),
+    articleJsonLd(article, canonicalUrl, imageSchemas),
     breadcrumbJsonLd(article, canonicalUrl, categorySlug),
     ...(article.author_name
       ? [personJsonLd({
@@ -2548,8 +2746,11 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
         slug: article.author_slug || slugify(article.author_name) || 'samoon-digital',
         bio: article.author_bio || '',
         image_url: article.author_image_url || '',
+        job_title: article.author_job_title || 'Editor',
       })]
       : []),
+    ...imageSchemas,
+    ...(jobSchema ? [jobSchema] : []),
     ...(videoSchema ? [videoSchema] : []),
     ...storedSchemaObjects(article.schema_markup),
   ];
@@ -2646,6 +2847,26 @@ function renderHomeCarousel(articles: PublicArticleRow[]) {
   </section>`;
 }
 
+function homePageJsonLd(articles: PublicArticleRow[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    name: HOMEPAGE_SEO_TITLE,
+    description: HOMEPAGE_SCHEMA_DESCRIPTION,
+    url: PUBLIC_SITE_ORIGIN,
+    publisher: organizationJsonLd(),
+    mainEntity: {
+      '@type': 'ItemList',
+      itemListElement: articles.slice(0, 10).map((article, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: publicArticleUrl(article.slug),
+        name: article.title,
+      })),
+    },
+  };
+}
+
 function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean; compactMeta?: boolean } = {}) {
   const eager = Boolean(options.eager);
   const compactMeta = Boolean(options.compactMeta);
@@ -2694,10 +2915,15 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
     : '';
 
   return publicShell(
-    'Hindiline - Latest Blogs and Updates',
-    'Hindiline par latest India-focused guides, updates, jobs, government notifications, finance and technology articles padhein.',
+    HOMEPAGE_SEO_TITLE,
+    HOMEPAGE_META_DESCRIPTION,
     `${trending}${spotlight}${recent}${empty}`,
-    '',
+    `<link rel="canonical" href="${escapeHtml(PUBLIC_SITE_ORIGIN)}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="${escapeHtml(HOMEPAGE_SEO_TITLE)}" />
+  <meta property="og:description" content="${escapeHtml(HOMEPAGE_META_DESCRIPTION)}" />
+  <meta property="og:url" content="${escapeHtml(PUBLIC_SITE_ORIGIN)}" />
+  ${jsonLdScript(homePageJsonLd(articles))}`,
     { categories, isHome: true },
   );
 }
@@ -2745,12 +2971,44 @@ function articleCardsList(articles: PublicArticleRow[]) {
     : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
 }
 
+function publicSearchPage(query: string, articles: PublicArticleRow[], categories: CategoryRow[]) {
+  const title = query ? `Search: ${query} - Hindiline` : 'Search Hindiline';
+  const description = query
+    ? `${query} se jude Hindiline articles aur latest updates dekhein.`
+    : 'Hindiline par articles, jobs, admit card aur latest updates search karein.';
+  const results = query ? articleCardsList(articles) : `<section class="wrap empty">Search ke liye keyword enter karein.</section>`;
+
+  return publicShell(
+    title,
+    description,
+    `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>Search</span></nav><h1>Search</h1><form class="filter-bar" method="get" action="/search"><input name="q" value="${escapeHtml(query)}" placeholder="Search Hindiline" /><button class="hero-btn primary" type="submit">Search ${renderPublicIcon('search')}</button></form></div></section>${results}`,
+    `<link rel="canonical" href="${escapeHtml(`${PUBLIC_SITE_ORIGIN}/search${query ? `?q=${encodeURIComponent(query)}` : ''}`)}" />`,
+    { categories },
+  );
+}
+
+function isJobsCategory(category: CategoryRow) {
+  return isVacancyArticle(category.name) || isVacancyArticle(category.slug);
+}
+
+function categorySeoTitle(category: CategoryRow) {
+  return isJobsCategory(category)
+    ? JOBS_CATEGORY_SEO_TITLE
+    : `${category.name} Articles - Hindiline`;
+}
+
+function categorySeoDescription(category: CategoryRow) {
+  return isJobsCategory(category)
+    ? JOBS_CATEGORY_SEO_DESCRIPTION
+    : category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
+}
+
 function categoryPageJsonLd(category: CategoryRow, articles: PublicArticleRow[]) {
   return {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
-    name: `${category.name} Articles`,
-    description: category.description || `${category.name} category ke latest articles aur updates.`,
+    name: categorySeoTitle(category),
+    description: categorySeoDescription(category),
     url: publicCategoryUrl(category.slug),
     mainEntity: {
       '@type': 'ItemList',
@@ -2797,17 +3055,111 @@ function categoryBreadcrumbJsonLd(category: CategoryRow) {
 }
 
 function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
-  const title = `${category.name} Articles - Hindiline`;
-  const description = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
+  const title = categorySeoTitle(category);
+  const description = categorySeoDescription(category);
+  const visibleDescription = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
   return publicShell(
     title,
     description,
-    `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(category.name)}</span></nav><h1>${escapeHtml(category.name)}</h1><p>${escapeHtml(description)}</p></div></section>${articleCardsList(articles)}`,
+    `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(category.name)}</span></nav><h1>${escapeHtml(category.name)}</h1><p>${escapeHtml(visibleDescription)}</p></div></section>${articleCardsList(articles)}`,
     `<link rel="canonical" href="${escapeHtml(publicCategoryUrl(category.slug))}" />
   ${jsonLdScript(categoryPageJsonLd(category, articles))}
   ${jsonLdScript(categoryBreadcrumbJsonLd(category))}`,
     { categories, activeCategorySlug: category.slug },
   );
+}
+
+function toSitemapDate(value: string | null | undefined) {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function maxSitemapDate(values: Array<string | null | undefined>) {
+  let latest = 0;
+  for (const value of values) {
+    const time = value ? new Date(value).getTime() : 0;
+    if (Number.isFinite(time) && time > latest) {
+      latest = time;
+    }
+  }
+  return latest ? new Date(latest).toISOString() : '';
+}
+
+function canonicalSitemapArticleUrl(article: SitemapArticleRow) {
+  const canonical = normalizeText(article.canonical_url);
+  if (canonical.startsWith(PUBLIC_SITE_ORIGIN)) {
+    return canonical;
+  }
+  return publicArticleUrl(article.slug);
+}
+
+function sitemapUrlEntry(loc: string, lastmod = '') {
+  return `  <url>
+    <loc>${escapeXml(loc)}</loc>${lastmod ? `\n    <lastmod>${escapeXml(lastmod)}</lastmod>` : ''}
+  </url>`;
+}
+
+function buildSitemapXml(articles: SitemapArticleRow[], categories: CategoryRow[], authors: AuthorRow[]) {
+  const categoryLastmod = new Map<string, string>();
+  for (const article of articles) {
+    const category = article.category || '';
+    if (!category) {
+      continue;
+    }
+    const current = categoryLastmod.get(category) || '';
+    categoryLastmod.set(category, maxSitemapDate([current, article.updated_at, article.created_at]));
+  }
+
+  const entries = [
+    sitemapUrlEntry(PUBLIC_SITE_ORIGIN, maxSitemapDate([
+      ...articles.map((article) => article.updated_at || article.created_at),
+      ...categories.map((category) => category.updated_at || category.created_at),
+      ...authors.map((author) => author.updated_at || author.created_at),
+    ])),
+    ...categories.map((category) => sitemapUrlEntry(
+      publicCategoryUrl(category.slug),
+      maxSitemapDate([category.updated_at, category.created_at, categoryLastmod.get(category.name)]),
+    )),
+    ...authors.map((author) => sitemapUrlEntry(publicAuthorUrl(author.slug), toSitemapDate(author.updated_at || author.created_at))),
+    ...articles.map((article) => sitemapUrlEntry(canonicalSitemapArticleUrl(article), toSitemapDate(article.updated_at || article.created_at))),
+  ];
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.join('\n')}
+</urlset>`;
+}
+
+function buildNewsSitemapXml(articles: SitemapArticleRow[]) {
+  const entries = articles.map((article) => `  <url>
+    <loc>${escapeXml(canonicalSitemapArticleUrl(article))}</loc>
+    <news:news>
+      <news:publication>
+        <news:name>${escapeXml(PUBLIC_SITE_NAME)}</news:name>
+        <news:language>hi</news:language>
+      </news:publication>
+      <news:publication_date>${escapeXml(toSitemapDate(article.created_at))}</news:publication_date>
+      <news:title>${escapeXml(article.title)}</news:title>
+    </news:news>
+  </url>`);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+${entries.join('\n')}
+</urlset>`;
+}
+
+function buildRobotsTxt() {
+  return `User-agent: *
+Allow: /
+
+Sitemap: ${PUBLIC_SITE_ORIGIN}/sitemap.xml
+Sitemap: ${PUBLIC_SITE_ORIGIN}/news-sitemap.xml
+`;
 }
 
 function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
@@ -2918,6 +3270,39 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     return servePublicAsset(c, key);
   }
 
+  if (url.pathname === '/robots.txt') {
+    return new Response(buildRobotsTxt(), {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+
+  if (url.pathname === '/sitemap.xml') {
+    const [articles, categories, authors] = await Promise.all([
+      readPublishedArticlesForSitemap(c.env.ADMIN_DB),
+      readCategories(c.env.ADMIN_DB),
+      readAuthors(c.env.ADMIN_DB),
+    ]);
+    return new Response(buildSitemapXml(articles, categories, authors), {
+      headers: {
+        'Content-Type': 'application/xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  }
+
+  if (url.pathname === '/news-sitemap.xml') {
+    const articles = await readPublishedArticlesForSitemap(c.env.ADMIN_DB, true);
+    return new Response(buildNewsSitemapXml(articles), {
+      headers: {
+        'Content-Type': 'application/xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  }
+
   c.header('Cache-Control', 'no-store, max-age=0, must-revalidate');
 
   if (url.pathname === '/' || url.pathname === '') {
@@ -2938,6 +3323,12 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
 
   if (url.pathname === '/privacy-policy' || url.pathname === '/privacy') {
     return c.html(publicInfoPage('privacy', categories));
+  }
+
+  if (url.pathname === '/search') {
+    const query = normalizeText(url.searchParams.get('q')).slice(0, 80);
+    const articles = await readPublishedArticlesBySearch(c.env.ADMIN_DB, query);
+    return c.html(publicSearchPage(query, articles, categories));
   }
 
   if (url.pathname.startsWith('/category/')) {
@@ -3931,6 +4322,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
                 </div>
               </div>
             </td>
+            <td>${escapeHtml(author.job_title || 'Editor')}</td>
             <td>${escapeHtml(author.bio || '')}</td>
             <td>
               <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -3941,7 +4333,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
           </tr>`,
       )
       .join('')
-    : `<tr><td colspan="3"><div class="empty-state">No authors yet.</div></td></tr>`;
+    : `<tr><td colspan="4"><div class="empty-state">No authors yet.</div></td></tr>`;
   const authorJson = escapeJsonForHtml(authors);
 
   return appShellPage(user, {
@@ -3959,7 +4351,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
             <div class="card-header"><h2>Manage Authors</h2></div>
             <div style="overflow-x:auto;">
               <table>
-                <thead><tr><th>Author</th><th>Description</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Author</th><th>Job Title</th><th>Description</th><th>Actions</th></tr></thead>
                 <tbody>${rows}</tbody>
               </table>
             </div>
@@ -3972,6 +4364,10 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
                 <div class="field">
                   <label for="author-name">Author Name</label>
                   <input id="author-name" required placeholder="Author name" />
+                </div>
+                <div class="field">
+                  <label for="author-job-title">Job Title</label>
+                  <input id="author-job-title" placeholder="Editor" />
                 </div>
                 <div class="field">
                   <label for="author-bio">Description</label>
@@ -3998,6 +4394,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
         function resetAuthorForm() {
           document.getElementById('author-id').value = '';
           document.getElementById('author-name').value = '';
+          document.getElementById('author-job-title').value = '';
           document.getElementById('author-bio').value = '';
           document.getElementById('author-image').value = '';
           document.getElementById('author-form-title').textContent = 'Add Author';
@@ -4011,6 +4408,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
           if (!author) return;
           document.getElementById('author-id').value = author.id;
           document.getElementById('author-name').value = author.name;
+          document.getElementById('author-job-title').value = author.job_title || '';
           document.getElementById('author-bio').value = author.bio || '';
           document.getElementById('author-form-title').textContent = 'Edit Author';
           cancelBtn.style.display = '';
@@ -4024,6 +4422,7 @@ function authorsPage(user: SessionUser, authors: AuthorRow[], message = '') {
           const id = document.getElementById('author-id').value;
           const payload = new FormData();
           payload.set('name', document.getElementById('author-name').value);
+          payload.set('jobTitle', document.getElementById('author-job-title').value);
           payload.set('bio', document.getElementById('author-bio').value);
           const image = document.getElementById('author-image').files[0];
           if (image) payload.set('image', image);
@@ -4694,7 +5093,7 @@ app.post('/api/articles/backfill-targeted-ui', async (c) => {
   const articles = await queryAll<ArticleRow>(
     c.env.ADMIN_DB
       .prepare(
-        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+        `SELECT ${articleSelectColumns('articles.content', true)}
          FROM articles
          LEFT JOIN authors ON authors.id = articles.author_id
          WHERE articles.status = 'published'
@@ -4850,6 +5249,7 @@ app.post('/api/authors', async (c) => {
 
   const formData = await c.req.raw.formData();
   const name = normalizeText(formData.get('name'));
+  const jobTitle = normalizeText(formData.get('jobTitle')) || 'Editor';
   const bio = normalizeText(formData.get('bio'));
   const image = formData.get('image');
   const authorId = crypto.randomUUID();
@@ -4869,8 +5269,8 @@ app.post('/api/authors', async (c) => {
 
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
-    .prepare('INSERT INTO authors (id, name, slug, bio, image_url, image_object_key, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
-    .bind(authorId, name, slug, bio || null, imageUrl, imageObjectKey, now, now)
+    .prepare('INSERT INTO authors (id, name, slug, bio, job_title, image_url, image_object_key, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)')
+    .bind(authorId, name, slug, bio || null, jobTitle, imageUrl, imageObjectKey, now, now)
     .run();
 
   return c.json({ ok: true });
@@ -4891,6 +5291,7 @@ app.patch('/api/authors/:id', async (c) => {
 
   const formData = await c.req.raw.formData();
   const name = normalizeText(formData.get('name'));
+  const jobTitle = normalizeText(formData.get('jobTitle')) || 'Editor';
   const bio = normalizeText(formData.get('bio'));
   const image = formData.get('image');
   const slug = slugify(name) || existing.slug;
@@ -4908,8 +5309,8 @@ app.patch('/api/authors/:id', async (c) => {
   }
 
   await c.env.ADMIN_DB
-    .prepare('UPDATE authors SET name = ?, slug = ?, bio = ?, image_url = ?, image_object_key = ?, updated_at = ? WHERE id = ?')
-    .bind(name, slug, bio || null, imageUrl, imageObjectKey, new Date().toISOString(), id)
+    .prepare('UPDATE authors SET name = ?, slug = ?, bio = ?, job_title = ?, image_url = ?, image_object_key = ?, updated_at = ? WHERE id = ?')
+    .bind(name, slug, bio || null, jobTitle, imageUrl, imageObjectKey, new Date().toISOString(), id)
     .run();
 
   return c.json({ ok: true });

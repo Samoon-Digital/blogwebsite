@@ -59,7 +59,7 @@ function extractVideoSection(content) {
 }
 
 function stripInternalLinksBlock(content) {
-  return String(content).replace(/\s*<div class="internal-links">[\s\S]*?<\/div>\s*$/i, '\n').trim();
+  return String(content).replace(/\s*<div\b[^>]*class=["'][^"']*\binternal-links\b[^"']*["'][^>]*>[\s\S]*?<\/div>\s*/gi, '\n').trim();
 }
 
 function normalizeLegacyInternalLinks(content, allArticles) {
