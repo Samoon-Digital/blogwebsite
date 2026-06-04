@@ -558,7 +558,7 @@ Keep answers short and factual. Use only details present in the text. If officia
         };
     }
 
-    async generateFeaturedImage(prompt: string, title: string, altText?: string, variant: 'featured' | 'inline' = 'featured'): Promise<GeneratedImage> {
+    async generateFeaturedImage(prompt: string, title: string, altText?: string, variant: 'featured' | 'inline' | 'targeted-featured' = 'featured'): Promise<GeneratedImage> {
         const variantRequirements = variant === 'inline'
             ? `Requirements:
 - Professional editorial image suitable inside a long-form article
@@ -568,6 +568,15 @@ Keep answers short and factual. Use only details present in the text. If officia
 - 16:9 aspect ratio for responsive web content
 - Clean composition, realistic details, and low visual noise
 - Strong enough for mobile, but optimized as an in-article supporting image`
+            : variant === 'targeted-featured'
+                ? `Requirements:
+- Professional Hindi news thumbnail / recruitment update card, not a generic stock photo
+- Make the visual specific to the article's department, exam, post, location, or recruitment type
+- Avoid generic laptop-office scenes, smiling candidate at desk, wedding/event-like styling, fake celebration, decorative flowers, and random government-building backgrounds
+- Use a strong editorial composition: official notice board, application form, admit card, exam document, department workplace, uniform, tools, or institution scene as appropriate
+- Text is allowed only as 2-4 large clean headline elements such as department acronym, year, post count, last date, admit card, result, or admission; no tiny paragraphs and no random/gibberish Hindi text
+- If text rendering is uncertain, use blank label panels, icons, numbers, forms, and document blocks instead of unreadable text
+- 16:9 aspect ratio, Google Discover-friendly, sharp mobile crop, high contrast, useful for a Hindi government update website`
             : `Requirements:
 - Professional quality suitable for blog headers
 - Bright, engaging colors that stand out

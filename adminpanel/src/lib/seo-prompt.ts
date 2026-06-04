@@ -142,7 +142,7 @@ Return ONLY valid JSON with this exact shape:
 {
   "seo_title": "Readable Hindi SEO title, 55-72 chars",
   "meta_description": "150-160 chars Hindi summary with main date/action",
-  "featured_image_prompt": "80-130 words, clean editorial 16:9 image, one clear subject, no text overlay",
+  "featured_image_prompt": "90-150 words, specific Hindi news thumbnail/recruitment update card prompt, department-specific visual, useful poster/editorial composition",
   "featured_image_alt": "Hindi alt text",
   "content": "<p>1-2 line Hindi summary only.</p>",
   "targeted_article_data": {
@@ -176,6 +176,8 @@ Rules:
 - Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, faqs.
 - Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, faqs.
 - Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, faqs.
+- Featured image prompt must not request a generic laptop/office/candidate-at-desk stock photo. For jobs, make it a recruitment news card with department/post-specific workplace or uniform/document visual. For admit card, show exam/admit-card document and exam hall/checklist visual. For admissions, show college/institute admission form/campus visual.
+- Use text in the image only as a few large clean elements such as department acronym, year, post count or date. Avoid tiny Hindi paragraphs and random decorative text.
 - If exact official URL is not known, return officialLinks as [].
 - Keep token use low: no long article body HTML. Backend will render the premium UI.`;
     }

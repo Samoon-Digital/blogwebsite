@@ -620,6 +620,41 @@ function renderTargetedArticleContent(article: Pick<PublicArticleRow | ArticleRo
   </div>`;
 }
 
+function targetedImageFactText(data: TargetedArticleData | null | undefined) {
+  if (!data) {
+    return '';
+  }
+
+  return [
+    ...(data.quickFacts || []).slice(0, 3).map((item) => `${item.label}: ${item.value}`),
+    ...(data.postsOrSeats || []).slice(0, 2).map((item) => `${item.label}: ${item.value}`),
+    ...(data.importantDates || []).slice(0, 2).map((item) => `${item.label}: ${item.value}`),
+  ]
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .join('; ');
+}
+
+function buildTargetedFeaturedImagePrompt(title: string, category: string, basePrompt: string, data: TargetedArticleData | null | undefined) {
+  const facts = targetedImageFactText(data);
+  const categoryScene = isVacancyArticle(category, title)
+    ? 'Create a strong recruitment news thumbnail/update card. Make the scene specific to the title and department: coal/industrial mine for Coal India, food testing lab for Food Analyst, railway workshop/tracks for railway, police/security uniform for guard/police posts, classroom for teacher posts, bank/office counter for bank posts, or a clean official notification/application-form desk when the department is generic.'
+    : isAdmitCardArticle(category, title)
+      ? 'Create an admit-card/exam update thumbnail with a clear admit card document, exam hall/checklist, calendar/date cue, and official document styling.'
+      : 'Create an admission update thumbnail with a college/institute campus, admission form, student documents, calendar/date cue, and official notice-board styling.';
+
+  return `${categoryScene}
+Article title: "${title}"
+Known facts to reflect visually: ${facts || 'Use the article title only; do not invent exact facts.'}
+
+Style: Hindi government-update news card, crisp 16:9 editorial thumbnail, high contrast, clean official look, useful for Hindiline readers.
+Text policy: use only 2-4 large readable text elements such as department acronym, 2026, post count, admit card, result, last date, or admission. Do not create tiny paragraphs, random Hindi text, or decorative text. If text may be unreadable, use blank label panels, icons, document blocks, calendar, and numbers instead.
+Avoid: generic smiling candidate at laptop, plain office stock photo, wedding/event look, flowers/decoration, fake logo misuse, irrelevant government building, clutter, and unrelated people.
+
+Additional AI context from article prompt:
+${basePrompt}`;
+}
+
 function extractHtmlBlocks(content: string, maxBlocks: number) {
   const blocks = Array.from(
     content.matchAll(/<(p|ul|ol|table|blockquote|figure)\b[\s\S]*?<\/\1>/gi),
@@ -3133,6 +3168,68 @@ ${entries.join('\n')}
 </urlset>`;
 }
 
+function buildPostSitemapXml(articles: SitemapArticleRow[]) {
+  const entries = articles.map((article) => sitemapUrlEntry(canonicalSitemapArticleUrl(article), toSitemapDate(article.updated_at || article.created_at)));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.join('\n')}
+</urlset>`;
+}
+
+function buildCategorySitemapXml(categories: CategoryRow[], articles: SitemapArticleRow[]) {
+  const categoryLastmod = new Map<string, string>();
+  for (const article of articles) {
+    const category = article.category || '';
+    if (!category) {
+      continue;
+    }
+    const current = categoryLastmod.get(category) || '';
+    categoryLastmod.set(category, maxSitemapDate([current, article.updated_at, article.created_at]));
+  }
+
+  const entries = categories.map((category) => sitemapUrlEntry(
+    publicCategoryUrl(category.slug),
+    maxSitemapDate([category.updated_at, category.created_at, categoryLastmod.get(category.name)]),
+  ));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.join('\n')}
+</urlset>`;
+}
+
+function buildPageSitemapXml(articles: SitemapArticleRow[], categories: CategoryRow[]) {
+  const lastmod = maxSitemapDate([
+    ...articles.map((article) => article.updated_at || article.created_at),
+    ...categories.map((category) => category.updated_at || category.created_at),
+  ]);
+  const entries = [
+    sitemapUrlEntry(PUBLIC_SITE_ORIGIN, lastmod),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/about-us`, lastmod),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/contact-us`, lastmod),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/privacy-policy`, lastmod),
+  ];
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.join('\n')}
+</urlset>`;
+}
+
+function buildSitemapIndexXml() {
+  const sitemapUrls = [
+    `${PUBLIC_SITE_ORIGIN}/sitemap.xml`,
+    `${PUBLIC_SITE_ORIGIN}/post-sitemap.xml`,
+    `${PUBLIC_SITE_ORIGIN}/category-sitemap.xml`,
+    `${PUBLIC_SITE_ORIGIN}/page-sitemap.xml`,
+    `${PUBLIC_SITE_ORIGIN}/news-sitemap.xml`,
+  ];
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemapUrls.map((loc) => `  <sitemap>
+    <loc>${escapeXml(loc)}</loc>
+  </sitemap>`).join('\n')}
+</sitemapindex>`;
+}
+
 function buildNewsSitemapXml(articles: SitemapArticleRow[]) {
   const entries = articles.map((article) => `  <url>
     <loc>${escapeXml(canonicalSitemapArticleUrl(article))}</loc>
@@ -3158,8 +3255,18 @@ function buildRobotsTxt() {
 Allow: /
 
 Sitemap: ${PUBLIC_SITE_ORIGIN}/sitemap.xml
+Sitemap: ${PUBLIC_SITE_ORIGIN}/sitemap-index.xml
 Sitemap: ${PUBLIC_SITE_ORIGIN}/news-sitemap.xml
 `;
+}
+
+function xmlResponse(xml: string) {
+  return new Response(xml, {
+    headers: {
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+    },
+  });
 }
 
 function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
@@ -3256,6 +3363,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
 
 async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   const url = new URL(c.req.url);
+  const sitemapPath = url.pathname.toLowerCase();
 
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     return c.text('Not found', 404);
@@ -3279,28 +3387,43 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     });
   }
 
-  if (url.pathname === '/sitemap.xml') {
+  if (sitemapPath === '/sitemap-index.xml' || sitemapPath === '/sitemap_index.xml') {
+    return xmlResponse(buildSitemapIndexXml());
+  }
+
+  if (sitemapPath === '/sitemap.xml') {
     const [articles, categories, authors] = await Promise.all([
       readPublishedArticlesForSitemap(c.env.ADMIN_DB),
       readCategories(c.env.ADMIN_DB),
       readAuthors(c.env.ADMIN_DB),
     ]);
-    return new Response(buildSitemapXml(articles, categories, authors), {
-      headers: {
-        'Content-Type': 'application/xml; charset=utf-8',
-        'Cache-Control': 'public, max-age=300',
-      },
-    });
+    return xmlResponse(buildSitemapXml(articles, categories, authors));
   }
 
-  if (url.pathname === '/news-sitemap.xml') {
+  if (sitemapPath === '/post-sitemap.xml') {
+    const articles = await readPublishedArticlesForSitemap(c.env.ADMIN_DB);
+    return xmlResponse(buildPostSitemapXml(articles));
+  }
+
+  if (sitemapPath === '/category-sitemap.xml') {
+    const [articles, categories] = await Promise.all([
+      readPublishedArticlesForSitemap(c.env.ADMIN_DB),
+      readCategories(c.env.ADMIN_DB),
+    ]);
+    return xmlResponse(buildCategorySitemapXml(categories, articles));
+  }
+
+  if (sitemapPath === '/page-sitemap.xml') {
+    const [articles, categories] = await Promise.all([
+      readPublishedArticlesForSitemap(c.env.ADMIN_DB),
+      readCategories(c.env.ADMIN_DB),
+    ]);
+    return xmlResponse(buildPageSitemapXml(articles, categories));
+  }
+
+  if (sitemapPath === '/news-sitemap.xml') {
     const articles = await readPublishedArticlesForSitemap(c.env.ADMIN_DB, true);
-    return new Response(buildNewsSitemapXml(articles), {
-      headers: {
-        'Content-Type': 'application/xml; charset=utf-8',
-        'Cache-Control': 'public, max-age=300',
-      },
-    });
+    return xmlResponse(buildNewsSitemapXml(articles));
   }
 
   c.header('Cache-Control', 'no-store, max-age=0, must-revalidate');
@@ -5610,10 +5733,14 @@ app.post('/api/articles/generate', async (c) => {
     const featuredImagePrompt = featuredImageMode === 'manual' && featuredImageInstruction
       ? `${featuredImageInstruction}\n\nUse this as the primary featured/hero image instruction for the article "${title}". Keep it editorial, 16:9 crop-safe, mobile-friendly, and without text overlay.`
       : blogContent.featured_image_prompt;
+    const finalFeaturedImagePrompt = targetedData
+      ? buildTargetedFeaturedImagePrompt(title, category, featuredImagePrompt, targetedData)
+      : featuredImagePrompt;
     const image = await openaiClient.generateFeaturedImage(
-      featuredImagePrompt,
+      finalFeaturedImagePrompt,
       title,
       blogContent.featured_image_alt,
+      targetedData ? 'targeted-featured' : 'featured',
     );
     const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
     const uploadedInlineAssets: Array<{ objectKey: string; publicUrl: string; image: GeneratedImage; caption: string }> = [];
