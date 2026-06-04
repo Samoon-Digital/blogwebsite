@@ -43,9 +43,12 @@ export interface TargetedArticleData {
 }
 
 export interface InlineImagePlan {
+    name?: string;
     prompt: string;
     alt: string;
     caption: string;
+    anchor?: string;
+    placement_heading?: string;
 }
 
 export interface GeneratedImage {
@@ -222,7 +225,7 @@ class OpenAIClient {
         return cleaned.slice(start);
     }
 
-    private async repairJsonResponse<T>(raw: string, label: string, fallback: T): Promise<T> {
+    private async repairJsonResponse<T>(raw: string, label: string, fallback: T, maxOutputTokens = 1400): Promise<T> {
         try {
             return this.parseJson<T>(this.extractJsonString(raw) || raw, label);
         } catch {
@@ -231,9 +234,9 @@ class OpenAIClient {
 
         try {
             const repaired = await this.createJsonResponse(
-                'You repair malformed model output into valid JSON. Return valid JSON only. No markdown.',
-                `Repair this ${label} into a JSON object with the same keys and concise string values:\n${raw.slice(0, 6000)}`,
-                1400,
+                'You repair malformed model output into valid JSON. Return valid JSON only. No markdown. Preserve HTML strings, arrays, objects, and all important article text.',
+                `Repair this ${label} into a valid JSON object with the same keys and value shapes. Escape quotes inside HTML attributes correctly. Do not summarize article content unless the original is incomplete:\n${raw.slice(0, 14000)}`,
+                maxOutputTokens,
             );
             return this.parseJson<T>(repaired, label);
         } catch {
@@ -293,18 +296,24 @@ class OpenAIClient {
         }
 
         return value
-            .map((item) => {
+            .map<InlineImagePlan | null>((item) => {
                 const record = item as Record<string, unknown>;
+                const name = this.scalarText(record?.name, '');
                 const prompt = this.scalarText(record?.prompt, '');
                 const alt = this.scalarText(record?.alt, '');
                 const caption = this.scalarText(record?.caption, '');
+                const anchor = this.scalarText(record?.anchor, '');
+                const placementHeading = this.scalarText(record?.placement_heading, '');
                 if (!prompt) {
                     return null;
                 }
                 return {
+                    name,
                     prompt,
                     alt,
                     caption,
+                    anchor,
+                    placement_heading: placementHeading,
                 };
             })
             .filter((item): item is InlineImagePlan => Boolean(item));
@@ -369,9 +378,25 @@ class OpenAIClient {
         const content = await this.createJsonResponse(
             systemPrompt,
             `Generate an SEO-optimized news/blog post with all required metadata and schema markup. Blog title: "${title}"${sourceInstructions}`,
-            9000,
+            14000,
         );
-        const parsed = this.parseJson<GeneratedBlogContent>(content, 'OpenAI blog content');
+        const parsed = await this.repairJsonResponse<GeneratedBlogContent>(
+            content,
+            'OpenAI blog content',
+            {
+                seo_title: title,
+                meta_description: `Read ${title}.`,
+                featured_image_prompt: '',
+                featured_image_alt: title,
+                content: '',
+                targeted_article_data: null,
+                inline_images: [],
+                schema_markup: {},
+                word_count: 0,
+                keyword_density: '',
+            },
+            12000,
+        );
 
         if (!parsed.content || !parsed.featured_image_prompt) {
             throw new Error('OpenAI blog response missed required content or featured image prompt fields');

@@ -37,6 +37,7 @@ export type SeoPromptContext = {
     trainingStyles?: TrainingStyleSet;
     relatedArticles?: Array<{ title: string; slug: string; category?: string | null }>;
     writerInstructions?: string;
+    featuredImageInstruction?: string;
     imageDirection?: string;
     inlineImageCount?: number;
     tutorialVideoUrl?: string;
@@ -123,8 +124,9 @@ export async function buildSeoPrompt(
         ? context.relatedArticles.map((article) => `- ${article.title}: /${article.slug}`).join('\n')
         : 'No related internal articles available.';
     const writerInstructions = context.writerInstructions?.trim() || 'No extra writing instructions provided.';
-    const imageDirection = context.imageDirection?.trim() || 'No extra image direction provided.';
-    const inlineImageCount = Math.max(0, Math.min(4, context.inlineImageCount || 0));
+    const featuredImageInstruction = context.featuredImageInstruction?.trim()
+        || context.imageDirection?.trim()
+        || 'No extra featured image instruction provided.';
     const tutorialVideoUrl = context.tutorialVideoUrl?.trim() || '';
     const isVacancyArticle = isVacancyCategory(category);
     const isTargetedStructuredArticle = isTargetedStructuredCategory(category);
@@ -215,7 +217,7 @@ Editorial focus:
 - Article Training Style: ${controls.useTrainingArticleStyle ? 'ON - follow saved article/body style notes below.' : 'OFF - ignore saved article/body style notes.'}
 - Featured Image Training Style: ${controls.useTrainingImageStyle ? 'ON - follow saved featured image notes below.' : 'OFF - ignore saved featured image notes.'}
 - News Angle: ${controls.newsAngle ? 'ON - write with a current news/explainer angle.' : 'OFF - write as an evergreen practical guide.'}
-- Inline Section Images: ${inlineImageCount > 0 ? `ON - plan ${inlineImageCount} supporting in-article images aligned with major sections.` : 'OFF - do not plan supporting in-article images.'}
+- Inline Section Images: ON - let the article decide useful supporting images and place them near the most relevant sections.
 
 ## Saved Headline Training Notes
 ${titleTrainingNotes}
@@ -232,8 +234,8 @@ ${relatedArticles}
 ## Custom Writer Instructions
 ${writerInstructions}
 
-## Image Direction
-${imageDirection}
+## Featured Image Instruction
+${featuredImageInstruction}
 
 ## Tutorial Video URL
 ${tutorialVideoUrl || 'No tutorial video provided.'}
@@ -373,14 +375,20 @@ Guidelines:
 - Size: Google Discover-friendly large image, at least 1200px wide, 16:9 crop-safe composition
 - ALT text: Include primary keyword, descriptive (50-125 chars)
 - Apply "Saved Featured Image Training Notes" directly inside featured_image_prompt when they are available.
-- Respect "Image Direction" for both featured and inline image ideas when provided.
+- Respect "Featured Image Instruction" only for featured_image_prompt. Do not force that instruction into inline images unless it also appears in Custom Writer Instructions.
 
-### 12B. Optional Inline Images Inside Article
-${inlineImageCount > 0 ? `Plan exactly ${inlineImageCount} supporting in-article images.` : 'Do not plan any inline images.'}
+### 12B. AI-Placed Inline Images Inside Article
+- Plan useful supporting in-article images for normal long-form articles. Usually return 2-6 inline_images, but use fewer for short articles and only when a visual improves understanding.
+- If Custom Writer Instructions name specific images/scenes, create one inline_images item for each meaningful named image/scene when it fits the article.
 - Each inline image should support a specific section, example, workflow, job role, comparison, or real-world scenario from the article.
 - Prompts must be visually specific, useful, editorial, and safe for a Hindi news/blog website.
 - Do not mention prompt text inside article content.
-- If custom writer instructions contain [IMAGE_PROMPT_1], [IMAGE_PROMPT_2], etc., treat them only as placement cues for the matching inline_images item; do not leave unexplained placeholder text in the article.
+- For every inline image, create a short lowercase hyphenated anchor such as "track-maintainer" or "salary-table".
+- In content, place exactly one invisible anchor near the best location for that image, using single quotes in the HTML attribute: <span data-inline-image-anchor='track-maintainer'></span>
+- Because content is inside a JSON string, escape any double quotes inside HTML attributes or use single quotes for HTML attributes.
+- Put the anchor after the paragraph that introduces the section/example, or immediately below the most relevant H2/H3 if the section starts with the visual.
+- Do not place image anchors in or immediately after Table of Contents, FAQ, related-articles blocks, or video sections.
+- Do not use [IMAGE_PROMPT_1] placeholders.
 - Inline image prompts should complement the article, not repeat the featured image.
 
 ### 12C. Tutorial Video
@@ -403,9 +411,12 @@ Return ONLY valid JSON with this exact structure:
   "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div><div class=\"internal-links\"><h3>ऐसे ही जुड़े लेख</h3><p>Is topic se jude aur updates ke liye ye articles bhi padhein:</p><ul><li><a href=\"/article-slug\">Article Title</a></li></ul></div>",
   "inline_images": [
     {
+      "name": "Short image name",
       "prompt": "Prompt for a supporting in-article image",
       "alt": "ALT text for that supporting image",
-      "caption": "Short caption in Hindi/Hinglish"
+      "caption": "Short caption in Hindi/Hinglish",
+      "anchor": "same-anchor-used-in-content",
+      "placement_heading": "Closest H2 or H3 heading text"
     }
   ],
   "schema_markup": {
@@ -435,7 +446,7 @@ ${isVacancyArticle ? '1B. **Vacancy Focus**: Keep vacancy articles concise and a
 9. **Links**: Use valid <a href="..."> anchors. Internal links should point to site slugs like "/slug"; external links must use target="_blank" rel="noopener noreferrer".
 10. **No Source Disclosure**: Never include "Reporting Source", "Source", source website name, source page title labels, or any note saying the article was created from another website.
 11. **Training Fidelity**: When saved training notes are ON, apply them only to the matching layer: headline notes for title tone, article notes for body structure/voice, and image notes for featured image prompt direction.
-12. **Inline Images Array**: Return exactly ${inlineImageCount} inline_images items when Inline Section Images is ON, otherwise return an empty array.
+12. **Inline Images Array**: For normal articles, return a useful inline_images array that matches the anchors placed in content. For targeted/jobs/admission/admit-card articles, the separate targeted prompt returns an empty inline_images array.
 
 Generate a high-quality, SEO-optimized blog post now.
 `;

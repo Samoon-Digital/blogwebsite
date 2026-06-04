@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
 import { buildSeoPrompt, type SeoPromptControls, type TrainingStyleSet } from './lib/seo-prompt';
-import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage, type TargetedArticleData } from './lib/openai';
+import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage, type InlineImagePlan, type TargetedArticleData } from './lib/openai';
 
 type Bindings = {
   ADMIN_DB: D1Database;
@@ -277,6 +277,26 @@ function slugify(value: string) {
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function normalizePlacementText(value: string) {
+  return stripHtml(value)
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\u0900-\u097F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeInlineImageAnchor(value: string) {
+  return normalizePlacementText(value)
+    .replace(/\s+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function buildSlug(title: string, fallbackId: string) {
@@ -1168,71 +1188,187 @@ async function uploadInlineImage(
   };
 }
 
+type InlineImageRenderPlan = {
+  url: string;
+  alt: string;
+  caption: string;
+  name?: string;
+  anchor?: string;
+  placementHeading?: string;
+};
+
 function renderInlineImageFigure(imageUrl: string, altText: string, caption: string) {
   const safeAlt = escapeHtml(altText);
   const safeCaption = escapeHtml(caption);
   return `<figure class="inline-image"><img src="${escapeHtml(optimizedImageUrl(imageUrl, 960, 72))}" srcset="${escapeHtml(contentImageSrcset(imageUrl))}" sizes="(max-width: 700px) calc(100vw - 24px), 760px" width="960" height="540" alt="${safeAlt}" loading="lazy" decoding="async" />${safeCaption ? `<figcaption>${safeCaption}</figcaption>` : ''}</figure>`;
 }
 
+function inlineImagePlacementKeys(image: InlineImageRenderPlan) {
+  return [image.anchor, image.name, image.placementHeading, image.alt, image.caption]
+    .map((value) => normalizeInlineImageAnchor(value || ''))
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+}
+
+function isBlockedInlineImageSection(sectionHtml: string) {
+  const headingMatch = sectionHtml.match(/<h[23]\b[^>]*>[\s\S]*?<\/h[23]>/i);
+  const headingText = normalizePlacementText(headingMatch?.[0] || '');
+  return /table of contents|toc|विषय सूची|faq|faqs|frequently asked|सवाल|प्रश्न|related|internal links|जुड़े लेख|video guide/.test(headingText)
+    || /class=["'][^"']*(?:internal-links|article-video|targeted-article)/i.test(sectionHtml);
+}
+
+function insertFigureAfterUsefulParagraph(sectionHtml: string, figureHtml: string) {
+  const headingMatch = sectionHtml.match(/^\s*<h[23]\b[^>]*>[\s\S]*?<\/h[23]>/i);
+  const headingEnd = headingMatch ? headingMatch[0].length : 0;
+  const body = sectionHtml.slice(headingEnd);
+  const paragraphRegex = /<p\b[^>]*>[\s\S]*?<\/p>/gi;
+  let paragraphMatch: RegExpExecArray | null;
+
+  while ((paragraphMatch = paragraphRegex.exec(body)) !== null) {
+    const paragraphHtml = paragraphMatch[0];
+    const text = stripHtml(paragraphHtml);
+    if (text.split(/\s+/).filter(Boolean).length >= 8 && !/data-inline-image-anchor|internal-links|article-video/i.test(paragraphHtml)) {
+      const insertAt = headingEnd + paragraphMatch.index + paragraphHtml.length;
+      return `${sectionHtml.slice(0, insertAt)}${figureHtml}${sectionHtml.slice(insertAt)}`;
+    }
+  }
+
+  if (headingEnd > 0) {
+    return `${sectionHtml.slice(0, headingEnd)}${figureHtml}${sectionHtml.slice(headingEnd)}`;
+  }
+
+  return `${sectionHtml}${figureHtml}`;
+}
+
+function insertFigureNearMatchingHeading(content: string, image: InlineImageRenderPlan, figureHtml: string) {
+  const keys = inlineImagePlacementKeys(image);
+  if (!keys.length) {
+    return { content, placed: false };
+  }
+
+  const headingRegex = /<h[23]\b[^>]*>[\s\S]*?<\/h[23]>/gi;
+  const matches = Array.from(content.matchAll(headingRegex));
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const start = match.index || 0;
+    const end = index + 1 < matches.length ? (matches[index + 1].index || content.length) : content.length;
+    const sectionHtml = content.slice(start, end);
+    if (isBlockedInlineImageSection(sectionHtml)) {
+      continue;
+    }
+
+    const headingKey = normalizeInlineImageAnchor(stripHtml(match[0]));
+    const matched = keys.some((key) => key.length > 2 && (headingKey.includes(key) || key.includes(headingKey)));
+    if (matched) {
+      const updatedSection = insertFigureAfterUsefulParagraph(sectionHtml, figureHtml);
+      return {
+        content: `${content.slice(0, start)}${updatedSection}${content.slice(end)}`,
+        placed: true,
+      };
+    }
+  }
+
+  return { content, placed: false };
+}
+
 function injectInlineImagesIntoArticle(
   content: string,
-  images: Array<{ url: string; alt: string; caption: string }>,
+  images: InlineImageRenderPlan[],
 ) {
   if (!images.length) {
     return content;
   }
 
-  const usedMarkerImages = new Set<number>();
-  let replacedMarker = false;
-  const contentWithMarkerImages = content.replace(/(?:<p>\s*)?\[IMAGE_PROMPT_(\d+)\](?:\s*<\/p>)?/gi, (_match, rawIndex) => {
+  const usedImages = new Set<number>();
+  let workingContent = content.replace(/(?:<p>\s*)?\[IMAGE_PROMPT_(\d+)\](?:\s*<\/p>)?/gi, (_match, rawIndex) => {
     const requestedIndex = Number(rawIndex) - 1;
-    const imageIndex = requestedIndex >= 0 && requestedIndex < images.length && !usedMarkerImages.has(requestedIndex)
+    const imageIndex = requestedIndex >= 0 && requestedIndex < images.length && !usedImages.has(requestedIndex)
       ? requestedIndex
-      : images.findIndex((_image, index) => !usedMarkerImages.has(index));
+      : images.findIndex((_image, index) => !usedImages.has(index));
     if (imageIndex < 0) {
       return '';
     }
-    replacedMarker = true;
-    usedMarkerImages.add(imageIndex);
+    usedImages.add(imageIndex);
     const image = images[imageIndex];
     return renderInlineImageFigure(image.url, image.alt, image.caption);
   });
 
-  if (replacedMarker) {
-    const remainingImages = images.filter((_image, index) => !usedMarkerImages.has(index));
-    return `${contentWithMarkerImages}${remainingImages.map((image) => renderInlineImageFigure(image.url, image.alt, image.caption)).join('')}`;
-  }
-
-  const h2Regex = /<h2\b[^>]*>[\s\S]*?<\/h2>/gi;
-  const matches = Array.from(content.matchAll(h2Regex));
-  if (!matches.length) {
-    return `${content}${images.map((image) => renderInlineImageFigure(image.url, image.alt, image.caption)).join('')}`;
-  }
-
-  let result = '';
-  let cursor = 0;
-  let imageIndex = 0;
-  for (const match of matches) {
-    const matchText = match[0];
-    const start = match.index || 0;
-    const end = start + matchText.length;
-    result += content.slice(cursor, end);
-    if (imageIndex < images.length) {
-      const image = images[imageIndex];
-      result += renderInlineImageFigure(image.url, image.alt, image.caption);
-      imageIndex += 1;
+  for (let index = 0; index < images.length; index += 1) {
+    if (usedImages.has(index)) {
+      continue;
     }
-    cursor = end;
+
+    const image = images[index];
+    const anchor = normalizeInlineImageAnchor(image.anchor || image.name || '');
+    if (!anchor) {
+      continue;
+    }
+
+    const anchorRegex = new RegExp(`(?:<p>\\s*)?<span\\b[^>]*data-inline-image-anchor=["']${escapeRegExp(anchor)}["'][^>]*>\\s*<\\/span>(?:\\s*<\\/p>)?`, 'i');
+    if (anchorRegex.test(workingContent)) {
+      workingContent = workingContent.replace(anchorRegex, renderInlineImageFigure(image.url, image.alt, image.caption));
+      usedImages.add(index);
+    }
   }
 
-  result += content.slice(cursor);
-  if (imageIndex < images.length) {
-    result += images
-      .slice(imageIndex)
+  for (let index = 0; index < images.length; index += 1) {
+    if (usedImages.has(index)) {
+      continue;
+    }
+
+    const image = images[index];
+    const placed = insertFigureNearMatchingHeading(
+      workingContent,
+      image,
+      renderInlineImageFigure(image.url, image.alt, image.caption),
+    );
+    if (placed.placed) {
+      workingContent = placed.content;
+      usedImages.add(index);
+    }
+  }
+
+  const headingRegex = /<h[23]\b[^>]*>[\s\S]*?<\/h[23]>/gi;
+  const matches = Array.from(workingContent.matchAll(headingRegex));
+  if (matches.length) {
+    let result = '';
+    let cursor = 0;
+    let nextImageIndex = images.findIndex((_image, index) => !usedImages.has(index));
+
+    for (let index = 0; index < matches.length; index += 1) {
+      const start = matches[index].index || 0;
+      const end = index + 1 < matches.length ? (matches[index + 1].index || workingContent.length) : workingContent.length;
+      const sectionHtml = workingContent.slice(start, end);
+      result += workingContent.slice(cursor, start);
+
+      if (nextImageIndex >= 0 && !isBlockedInlineImageSection(sectionHtml)) {
+        const image = images[nextImageIndex];
+        result += insertFigureAfterUsefulParagraph(sectionHtml, renderInlineImageFigure(image.url, image.alt, image.caption));
+        usedImages.add(nextImageIndex);
+        nextImageIndex = images.findIndex((_image, imageIndex) => !usedImages.has(imageIndex));
+      } else {
+        result += sectionHtml;
+      }
+
+      cursor = end;
+    }
+
+    result += workingContent.slice(cursor);
+    workingContent = result;
+  }
+
+  if (!matches.length) {
+    const unplacedFigures = images
+      .filter((_image, index) => !usedImages.has(index))
       .map((image) => renderInlineImageFigure(image.url, image.alt, image.caption))
       .join('');
+    if (unplacedFigures) {
+      workingContent = insertFigureAfterUsefulParagraph(workingContent, unplacedFigures);
+    }
   }
-  return result;
+
+  return workingContent
+    .replace(/(?:<p>\s*)?<span\b[^>]*data-inline-image-anchor=["'][^"']+["'][^>]*>\s*<\/span>(?:\s*<\/p>)?/gi, '')
+    .trim();
 }
 
 async function uploadAuthorImage(c: Context<{ Bindings: Bindings }>, file: File, authorId: string, slug: string) {
@@ -1931,6 +2067,31 @@ function publicStyles() {
     .content .internal-links h3 { margin-top: 0; margin-bottom: 10px; font-size: 1.1rem; }
     .content .internal-links p { margin-bottom: 10px; }
     .content .internal-links ul { padding-left: 1.2em; margin-bottom: 0; }
+    .article:not(.targeted-article-page) h1 { letter-spacing: 0; }
+    .content:not(.targeted-content) { font-size: 1.04rem; line-height: 1.9; color: #182536; }
+    .content:not(.targeted-content) > p:first-of-type { font-size: 1.08rem; line-height: 1.86; color: #334155; }
+    .content:not(.targeted-content) h2 { margin-top: 1.9em; padding-top: 0.2em; color: #071527; font-size: clamp(1.42rem, 1.26rem + 0.48vw, 1.88rem); letter-spacing: 0; }
+    .content:not(.targeted-content) h3 { margin-top: 1.45em; color: #10233f; font-size: clamp(1.16rem, 1.06rem + 0.22vw, 1.38rem); letter-spacing: 0; }
+    .content:not(.targeted-content) h2 + ul, .content:not(.targeted-content) h2 + ol { margin-top: -0.15em; }
+    .content:not(.targeted-content) ul, .content:not(.targeted-content) ol { display: grid; gap: 0.42em; padding-left: 1.35em; }
+    .content:not(.targeted-content) li::marker { color: var(--red); }
+    .content:not(.targeted-content) a { color: #0b4f8a; text-decoration-thickness: 1px; text-underline-offset: 3px; font-weight: 650; }
+    .content:not(.targeted-content) table { display: block; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; border-collapse: separate; border-spacing: 0; background: #fff; box-shadow: 0 10px 24px rgba(15, 38, 70, 0.06); }
+    .content:not(.targeted-content) th { background: #f2f6fb; color: #10233f; font-size: 0.86rem; letter-spacing: 0; text-transform: none; }
+    .content:not(.targeted-content) td, .content:not(.targeted-content) th { min-width: 160px; padding: 12px 14px; vertical-align: top; }
+    .content:not(.targeted-content) blockquote { padding: 14px 16px; border-left: 4px solid var(--red); background: #fff7f7; color: #263548; border-radius: 0 8px 8px 0; }
+    .content:not(.targeted-content) figure.inline-image { margin: 1.45em 0 1.7em; }
+    .content:not(.targeted-content) figure.inline-image img { border-radius: 8px; box-shadow: 0 14px 30px rgba(15, 38, 70, 0.1); }
+    .content:not(.targeted-content) figure.inline-image figcaption { padding-left: 2px; color: #5b6678; font-size: 0.9rem; }
+    .content:not(.targeted-content) .faq, .content:not(.targeted-content) details { margin: 1.4em 0; border: 1px solid var(--border); border-radius: 8px; background: #fff; overflow: hidden; }
+    .content:not(.targeted-content) .faq-item { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .content:not(.targeted-content) .faq-item:last-child { border-bottom: 0; }
+    .content:not(.targeted-content) details summary { cursor: pointer; padding: 14px 16px; font-weight: 800; color: #10233f; list-style-position: inside; }
+    .content:not(.targeted-content) details p { padding: 0 16px 16px; margin: 0; color: #465467; }
+    .content:not(.targeted-content) .article-video { border-radius: 8px; background: #f6f9fd; }
+    .content:not(.targeted-content) .internal-links { border-radius: 8px; background: #f7fbff; box-shadow: 0 12px 28px rgba(15, 38, 70, 0.06); }
+    .content:not(.targeted-content) .internal-links h3 { color: #071527; font-size: 1.18rem; letter-spacing: 0; }
+    .content:not(.targeted-content) .internal-links li { margin-bottom: 0.35em; }
     .article.targeted-article-page .article-head, .article.targeted-article-page .article-meta-panel, .article.targeted-article-page .share-strip, .content.targeted-content { max-width: 860px; }
     .targeted-article { display: grid; gap: 18px; color: #172033; }
     .target-summary { margin: 0; color: #4a5568; font-size: 1.05rem; line-height: 1.72; }
@@ -2045,6 +2206,13 @@ function publicStyles() {
       .article-meta-panel { align-items: flex-start; }
       .article .dek { font-size: 1.07rem; }
       .share-link { min-height: 36px; padding: 0 12px; font-size: 0.84rem; }
+      .content:not(.targeted-content) { font-size: 0.99rem; line-height: 1.84; }
+      .content:not(.targeted-content) > p:first-of-type { font-size: 1.01rem; line-height: 1.78; }
+      .content:not(.targeted-content) h2 { font-size: 1.28rem; line-height: 1.36; margin-top: 1.65em; }
+      .content:not(.targeted-content) h3 { font-size: 1.12rem; line-height: 1.38; }
+      .content:not(.targeted-content) td, .content:not(.targeted-content) th { min-width: 140px; padding: 10px 12px; }
+      .content:not(.targeted-content) .internal-links, .content:not(.targeted-content) .article-video { padding: 14px; }
+      .content:not(.targeted-content) figure.inline-image { margin: 1.15em 0 1.35em; }
       .targeted-article { gap: 14px; }
       .target-summary { font-size: 0.96rem; }
       .target-section-head { min-height: 48px; padding: 0 14px; }
@@ -3228,8 +3396,8 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <input id="title" name="title" placeholder="e.g., Waiting List Kya Hai" />
               </div>
               <div class="field" data-normal-mode-control>
-                <label for="writer-instructions">Writing Instructions</label>
-                <textarea id="writer-instructions" name="writer_instructions" placeholder="Example: simple Hinglish me likho, intro me clear answer do, examples include karo, job roles ko bullet points me samjhao, comparison table do, FAQs bhi rakho."></textarea>
+                <label for="writer-instructions">Writing + Inline Image Instructions</label>
+                <textarea id="writer-instructions" name="writer_instructions" placeholder="Example: simple Hinglish me likho, intro me clear answer do. Inline images: Track Maintainer image - workers track inspection karte hue; Pointsman image - yard me train movement support; Loco Shed image - maintenance tools aur inspection scene."></textarea>
               </div>
               <div class="field">
                 <label for="category">Category</label>
@@ -3264,15 +3432,19 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderOnOffControl('use-training-image-style', 'Image Style', true)}
                 </div>
               </div>
-              <div class="cols-2" data-normal-mode-control>
-                <div class="field">
-                  <label for="inline-image-count">Inline Images</label>
-                  <input id="inline-image-count" type="number" min="0" max="4" value="0" />
+              <div class="field" data-normal-mode-control>
+                <label>Featured Image</label>
+                <div class="radio-grid">
+                  <div class="radio-control">
+                    <strong>Mode</strong>
+                    <label><input type="radio" name="featured-image-mode" value="auto" checked /> Auto</label>
+                    <label><input type="radio" name="featured-image-mode" value="manual" /> Manual</label>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="image-direction">Image Direction</label>
-                  <textarea id="image-direction" placeholder="Optional: featured aur article images kis style ya kin scenes ke saath generate hon, yahan batayein."></textarea>
-                </div>
+              </div>
+              <div class="field" data-normal-mode-control>
+                <label for="featured-image-instruction">Featured Image Instruction</label>
+                <textarea id="featured-image-instruction" placeholder="Optional: sirf featured image ke liye scene/style likhein. Inline images ke prompts Writing box me rahenge."></textarea>
               </div>
               <div class="field">
                 <label for="video-url">Tutorial Video URL</label>
@@ -3296,7 +3468,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <div class="item-row"><div class="title">SEO-optimized blog content</div></div>
                 <div class="item-row"><div class="title">Schema markup (FAQ, Article)</div></div>
                 <div class="item-row"><div class="title">AVIF-ready featured image delivery</div></div>
-                <div class="item-row"><div class="title">Optional inline section images</div></div>
+                <div class="item-row"><div class="title">AI-placed inline section images</div></div>
                 <div class="item-row"><div class="title">Meta title &amp; description</div></div>
               </div>
             </div>
@@ -3431,8 +3603,8 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 useTrainingArticleStyle: targetedMode ? false : document.querySelector('input[name="use-training-article-style"]:checked').value === 'on',
                 useTrainingImageStyle: targetedMode ? false : document.querySelector('input[name="use-training-image-style"]:checked').value === 'on',
                 writerInstructions: targetedMode ? '' : document.getElementById('writer-instructions').value,
-                inlineImageCount: targetedMode ? 0 : Number(document.getElementById('inline-image-count').value) || 0,
-                imageDirection: targetedMode ? '' : document.getElementById('image-direction').value,
+                featuredImageMode: targetedMode ? 'auto' : document.querySelector('input[name="featured-image-mode"]:checked').value,
+                featuredImageInstruction: targetedMode ? '' : document.getElementById('featured-image-instruction').value,
                 videoUrl: document.getElementById('video-url').value,
                 newsAngle: targetedMode ? true : document.querySelector('input[name="news-angle"]:checked').value === 'on',
               }),
@@ -4952,6 +5124,8 @@ app.post('/api/articles/generate', async (c) => {
       sourceUrl?: string;
       authorId?: string;
       writerInstructions?: string;
+      featuredImageMode?: string;
+      featuredImageInstruction?: string;
       imageDirection?: string;
       inlineImageCount?: number;
       videoUrl?: string;
@@ -4969,8 +5143,8 @@ app.post('/api/articles/generate', async (c) => {
     const manualTitle = normalizeText(body.title);
     const requestedCategory = normalizeText(body.category) || 'News';
     const writerInstructions = normalizeText(body.writerInstructions);
-    const imageDirection = normalizeText(body.imageDirection);
-    const inlineImageCount = clampInlineImageCount(body.inlineImageCount);
+    const featuredImageMode = normalizeText(body.featuredImageMode).toLowerCase() === 'manual' ? 'manual' : 'auto';
+    const featuredImageInstruction = normalizeText(body.featuredImageInstruction) || normalizeText(body.imageDirection);
     const videoUrl = normalizeYouTubeUrl(normalizeText(body.videoUrl));
     const controls = parseGenerationControls(body as Record<string, unknown>);
     const sourceUrl = normalizeText(body.sourceUrl);
@@ -5023,8 +5197,7 @@ app.post('/api/articles/generate', async (c) => {
       trainingStyles,
       relatedArticles,
       writerInstructions,
-      imageDirection,
-      inlineImageCount,
+      featuredImageInstruction,
       tutorialVideoUrl: videoUrl,
     });
     const blogContent = await openaiClient.generateBlogContent(seoPrompt, title, source || undefined);
@@ -5033,15 +5206,18 @@ app.post('/api/articles/generate', async (c) => {
       throw new Error('OpenAI blog response produced an empty article body');
     }
     const targetedData = isTargetedArticleCategory(category, title) ? blogContent.targeted_article_data : null;
+    const featuredImagePrompt = featuredImageMode === 'manual' && featuredImageInstruction
+      ? `${featuredImageInstruction}\n\nUse this as the primary featured/hero image instruction for the article "${title}". Keep it editorial, 16:9 crop-safe, mobile-friendly, and without text overlay.`
+      : blogContent.featured_image_prompt;
     const image = await openaiClient.generateFeaturedImage(
-      blogContent.featured_image_prompt,
+      featuredImagePrompt,
       title,
       blogContent.featured_image_alt,
     );
     const uploadedImage = await uploadFeaturedImage(c, image, articleId, slug);
     const uploadedInlineAssets: Array<{ objectKey: string; publicUrl: string; image: GeneratedImage; caption: string }> = [];
-    const inlineImagesToRender: Array<{ url: string; alt: string; caption: string }> = [];
-    const inlinePlans = (blogContent.inline_images || []).slice(0, inlineImageCount);
+    const inlineImagesToRender: InlineImageRenderPlan[] = [];
+    const inlinePlans: InlineImagePlan[] = targetedData ? [] : (blogContent.inline_images || []).slice(0, 6);
     for (let index = 0; index < inlinePlans.length; index += 1) {
       const plan = inlinePlans[index];
       const inlineImage = await openaiClient.generateFeaturedImage(
@@ -5061,6 +5237,9 @@ app.post('/api/articles/generate', async (c) => {
         url: uploadedInlineImage.publicUrl,
         alt: inlineImage.altText,
         caption: plan.caption || '',
+        name: plan.name || '',
+        anchor: plan.anchor || '',
+        placementHeading: plan.placement_heading || '',
       });
     }
     if (targetedData) {
