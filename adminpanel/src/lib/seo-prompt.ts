@@ -42,8 +42,38 @@ export type SeoPromptContext = {
     tutorialVideoUrl?: string;
 };
 
-function isTargetedStructuredCategory(category: string, title = '') {
-    return /भर्ती|jobs?|vacancy|recruitment|bharti|naukri|एडमिट\s*कार्ड|admit\s*card|admitcard|hall\s*ticket|admissions?|admission|प्रवेश/i.test(`${category} ${title}`);
+function normalizeTargetCategoryKey(category: string | null | undefined) {
+    return (category || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ');
+}
+
+function compactTargetCategoryKey(category: string | null | undefined) {
+    return normalizeTargetCategoryKey(category).replace(/\s+/g, '');
+}
+
+function isVacancyCategory(category: string | null | undefined) {
+    const key = normalizeTargetCategoryKey(category);
+    const compact = compactTargetCategoryKey(category);
+    return ['भर्ती', 'job', 'jobs', 'vacancy', 'recruitment', 'bharti', 'naukri', 'sarkari naukri'].includes(key)
+        || compact === 'sarkarinaukri';
+}
+
+function isAdmitCardCategory(category: string | null | undefined) {
+    const key = normalizeTargetCategoryKey(category);
+    const compact = compactTargetCategoryKey(category);
+    return ['एडमिट कार्ड', 'admit card', 'admitcard', 'hall ticket', 'hallticket'].includes(key)
+        || compact === 'एडमिटकार्ड';
+}
+
+function isAdmissionsCategory(category: string | null | undefined) {
+    return ['admissions', 'admission', 'प्रवेश'].includes(normalizeTargetCategoryKey(category));
+}
+
+function isTargetedStructuredCategory(category: string) {
+    return isVacancyCategory(category) || isAdmitCardCategory(category) || isAdmissionsCategory(category);
 }
 
 export async function buildSeoPrompt(
@@ -96,8 +126,8 @@ export async function buildSeoPrompt(
     const imageDirection = context.imageDirection?.trim() || 'No extra image direction provided.';
     const inlineImageCount = Math.max(0, Math.min(4, context.inlineImageCount || 0));
     const tutorialVideoUrl = context.tutorialVideoUrl?.trim() || '';
-    const isVacancyArticle = /vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(category);
-    const isTargetedStructuredArticle = isTargetedStructuredCategory(category, blogTitle);
+    const isVacancyArticle = isVacancyCategory(category);
+    const isTargetedStructuredArticle = isTargetedStructuredCategory(category);
     if (isTargetedStructuredArticle) {
         return `You are a Hindi education/jobs editor for Hindiline.
 
@@ -350,6 +380,7 @@ ${inlineImageCount > 0 ? `Plan exactly ${inlineImageCount} supporting in-article
 - Each inline image should support a specific section, example, workflow, job role, comparison, or real-world scenario from the article.
 - Prompts must be visually specific, useful, editorial, and safe for a Hindi news/blog website.
 - Do not mention prompt text inside article content.
+- If custom writer instructions contain [IMAGE_PROMPT_1], [IMAGE_PROMPT_2], etc., treat them only as placement cues for the matching inline_images item; do not leave unexplained placeholder text in the article.
 - Inline image prompts should complement the article, not repeat the featured image.
 
 ### 12C. Tutorial Video

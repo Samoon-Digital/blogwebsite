@@ -343,20 +343,38 @@ function estimateReadMinutes(value: string) {
   return Math.max(1, Math.ceil(wordCount / 220));
 }
 
-function isVacancyArticle(category: string | null | undefined, title = '') {
-  return /भर्ती|vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(`${category || ''} ${title}`);
+function normalizeTargetCategoryKey(category: string | null | undefined) {
+  return normalizeText(category)
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function isAdmitCardArticle(category: string | null | undefined, title = '') {
-  return /एडमिट\s*कार्ड|admit\s*card|admitcard|hall\s*ticket/i.test(`${category || ''} ${title}`);
+function compactTargetCategoryKey(category: string | null | undefined) {
+  return normalizeTargetCategoryKey(category).replace(/\s+/g, '');
 }
 
-function isAdmissionsArticle(category: string | null | undefined, title = '') {
-  return /admissions?|admission|प्रवेश/i.test(`${category || ''} ${title}`);
+function isVacancyArticle(category: string | null | undefined, _title = '') {
+  const key = normalizeTargetCategoryKey(category);
+  const compact = compactTargetCategoryKey(category);
+  return ['भर्ती', 'job', 'jobs', 'vacancy', 'recruitment', 'bharti', 'naukri', 'sarkari naukri'].includes(key)
+    || compact === 'sarkarinaukri';
 }
 
-function isTargetedArticleCategory(category: string | null | undefined, title = '') {
-  return isVacancyArticle(category, title) || isAdmitCardArticle(category, title) || isAdmissionsArticle(category, title);
+function isAdmitCardArticle(category: string | null | undefined, _title = '') {
+  const key = normalizeTargetCategoryKey(category);
+  const compact = compactTargetCategoryKey(category);
+  return ['एडमिट कार्ड', 'admit card', 'admitcard', 'hall ticket', 'hallticket'].includes(key)
+    || compact === 'एडमिटकार्ड';
+}
+
+function isAdmissionsArticle(category: string | null | undefined, _title = '') {
+  return ['admissions', 'admission', 'प्रवेश'].includes(normalizeTargetCategoryKey(category));
+}
+
+function isTargetedArticleCategory(category: string | null | undefined, _title = '') {
+  return isVacancyArticle(category) || isAdmitCardArticle(category) || isAdmissionsArticle(category);
 }
 
 function hasTargetedArticleMarkup(content: string) {
@@ -1164,6 +1182,27 @@ function injectInlineImagesIntoArticle(
     return content;
   }
 
+  const usedMarkerImages = new Set<number>();
+  let replacedMarker = false;
+  const contentWithMarkerImages = content.replace(/(?:<p>\s*)?\[IMAGE_PROMPT_(\d+)\](?:\s*<\/p>)?/gi, (_match, rawIndex) => {
+    const requestedIndex = Number(rawIndex) - 1;
+    const imageIndex = requestedIndex >= 0 && requestedIndex < images.length && !usedMarkerImages.has(requestedIndex)
+      ? requestedIndex
+      : images.findIndex((_image, index) => !usedMarkerImages.has(index));
+    if (imageIndex < 0) {
+      return '';
+    }
+    replacedMarker = true;
+    usedMarkerImages.add(imageIndex);
+    const image = images[imageIndex];
+    return renderInlineImageFigure(image.url, image.alt, image.caption);
+  });
+
+  if (replacedMarker) {
+    const remainingImages = images.filter((_image, index) => !usedMarkerImages.has(index));
+    return `${contentWithMarkerImages}${remainingImages.map((image) => renderInlineImageFigure(image.url, image.alt, image.caption)).join('')}`;
+  }
+
   const h2Regex = /<h2\b[^>]*>[\s\S]*?<\/h2>/gi;
   const matches = Array.from(content.matchAll(h2Regex));
   if (!matches.length) {
@@ -1437,7 +1476,7 @@ async function readArticles(
 async function readPublishedArticles(db: D1Database) {
   return queryAll<PublicArticleRow>(
     db.prepare(
-      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 12",
+      "SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT 12",
     ),
   );
 }
@@ -1769,11 +1808,16 @@ function publicStyles() {
     .header-top-inner { min-height: 68px; display: flex; align-items: center; gap: 18px; padding: 8px 0; }
     .brand-mark { display: inline-flex; align-items: center; flex-shrink: 0; }
     .brand-logo { width: auto; height: 50px; object-fit: contain; }
-    .mobile-menu-anchor { display: none; }
+    .mobile-site-menu { display: none; position: relative; }
+    .mobile-site-menu summary { list-style: none; display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; color: var(--text); cursor: pointer; }
+    .mobile-site-menu summary::-webkit-details-marker { display: none; }
+    .mobile-site-menu-panel { position: absolute; left: 0; top: calc(100% + 10px); width: min(260px, 86vw); display: grid; gap: 4px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 22px 44px rgba(16, 24, 40, 0.16); }
+    .mobile-site-menu-panel a { padding: 11px 12px; border-radius: 7px; color: var(--ink); font-weight: 760; font-size: 0.93rem; }
+    .mobile-site-menu-panel a:hover { background: #f4f7fb; color: var(--red); }
     .header-ad-slot { display: none; }
     .header-search { margin-left: auto; width: 42px; height: 42px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
-    .header-search svg, .nav-icon svg, .nav-arrow svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; color: var(--ink); }
+    .header-search svg, .mobile-site-menu svg, .nav-icon svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--ink); }
     .nav-scroll { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 4px 0; }
     .nav-scroll::-webkit-scrollbar { display: none; }
     .top-nav-link { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 12px; border-radius: 999px; font-size: 0.9rem; font-weight: 760; white-space: nowrap; color: #111827; transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
@@ -1781,8 +1825,7 @@ function publicStyles() {
     .top-nav-link.active, .top-nav-link.home-link.active { background: var(--red); color: #fff; box-shadow: 0 8px 16px rgba(225, 25, 36, 0.2); }
     .top-nav-link.home-link { color: var(--red); }
     .nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: 0 0 auto; }
-    .nav-arrow, .nav-more summary { width: 34px; height: 34px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-    .nav-arrow-left svg { transform: rotate(180deg); }
+    .nav-more summary { width: 34px; height: 34px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
     .nav-more { position: relative; flex: 0 0 auto; }
     .nav-more summary { list-style: none; }
     .nav-more summary::-webkit-details-marker { display: none; }
@@ -1811,7 +1854,7 @@ function publicStyles() {
     .home-slide-media { min-height: 340px; background: #eaf1f9; display: flex; align-items: stretch; justify-content: center; }
     .home-slide-media img { width: 100%; height: 100%; min-height: 340px; object-fit: cover; }
     .slide-empty-image { width: 100%; min-height: 340px; display: grid; place-items: center; background: linear-gradient(135deg, #e9f3ff, #fff6e0); color: var(--accent); font-size: 1.5rem; font-weight: 850; }
-    .slider-controls { position: absolute; left: 42px; bottom: 22px; display: inline-flex; align-items: center; gap: 12px; }
+    .slider-controls { position: static; display: inline-flex; align-items: center; gap: 12px; padding: 0 42px 22px; }
     .slider-dots { display: inline-flex; align-items: center; gap: 12px; }
     .slider-dot { width: 8px; height: 8px; border: 0; border-radius: 50%; background: #c6ced9; cursor: pointer; }
     .slider-dot.active { width: 18px; border-radius: 999px; background: var(--red); }
@@ -1957,16 +2000,18 @@ function publicStyles() {
     .profile-head h1 { font-size: clamp(1.75rem, 1.5rem + 1vw, 2.6rem); line-height: 1.1; }
     .profile-head p { color: var(--muted); line-height: 1.7; margin-top: 6px; max-width: 680px; }
     .site-footer { border-top: 1px solid var(--border); padding: 22px 0; color: var(--muted); font-size: 0.88rem; }
+    .site-footer .wrap { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .footer-links { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .footer-links a { color: var(--ink); font-weight: 700; }
+    .footer-links a:hover { color: var(--red); }
     @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
     @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
     @media (max-width: 820px) {
       .header-top-inner { display: grid; grid-template-columns: auto 1fr auto; min-height: 64px; gap: 10px; padding: 8px 0; }
-      .mobile-menu-anchor { grid-column: 1; grid-row: 1; }
+      .mobile-site-menu { grid-column: 1; grid-row: 1; display: inline-flex; }
       .brand-mark { grid-column: 2; grid-row: 1; }
       .header-search { grid-column: 3; grid-row: 1; margin-left: 0; }
-      .section-nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1fr) auto auto; }
-      .nav-arrow-left { display: none; }
-      .mobile-menu-anchor { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; color: var(--text); font-size: 1.28rem; }
+      .section-nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1fr) auto; }
       .brand-logo { height: 42px; }
       .top-nav-link { min-height: 38px; padding: 0 11px; font-size: 0.88rem; }
       .ticker-inner { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; min-height: 36px; }
@@ -1975,10 +2020,11 @@ function publicStyles() {
       .ticker-list li { width: calc(100vw - 130px); max-width: none; font-size: 0.84rem; }
       .home-spotlight { padding-top: 16px; }
       .home-slide { grid-template-columns: 1fr; }
-      .home-slide-copy { min-height: auto; padding: 22px 18px 60px; }
+      .home-slide-copy { min-height: auto; padding: 22px 18px 18px; }
       .home-slide-media { min-height: 220px; order: -1; }
       .home-slide-media img, .slide-empty-image { min-height: 220px; }
-      .slider-controls { left: 18px; bottom: 16px; }
+      .slider-controls { padding: 0 18px 16px; }
+      .footer-links { display: none; }
       .hero { padding: 20px 0 14px; }
       .content.targeted-content { max-width: 100%; }
       .target-quick-grid, .target-post-grid, .target-doc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2059,6 +2105,12 @@ function categoryIconName(categoryName: string) {
   return 'tag';
 }
 
+const PUBLIC_INFO_LINKS = [
+  { href: '/about-us', label: 'About Us' },
+  { href: '/contact-us', label: 'Contact Us' },
+  { href: '/privacy-policy', label: 'Privacy Policy' },
+];
+
 function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlug?: string | null; isHome?: boolean } = {}) {
   const activeCategorySlug = options.activeCategorySlug || '';
   const homeClass = options.isHome ? ' active' : '';
@@ -2073,13 +2125,24 @@ function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlu
     .join('');
 
   return `<nav class="section-nav" aria-label="Primary categories">
-    <button class="nav-arrow nav-arrow-left" type="button" data-nav-scroll="-1" aria-label="Previous categories">${renderPublicIcon('arrow')}</button>
     <div class="nav-scroll" id="top-nav">
       <a class="top-nav-link home-link${homeClass}" href="/"><span class="nav-icon">${renderPublicIcon('home')}</span><span>होम</span></a>${links}
     </div>
-    <button class="nav-arrow" type="button" data-nav-scroll="1" aria-label="More categories">${renderPublicIcon('arrow')}</button>
     ${categories.length ? `<details class="nav-more"><summary aria-label="Open category menu">${renderPublicIcon('menu')}</summary><div>${moreLinks}</div></details>` : ''}
   </nav>`;
+}
+
+function renderMobileInfoMenu() {
+  return `<details class="mobile-site-menu">
+    <summary aria-label="Open site menu">${renderPublicIcon('menu')}</summary>
+    <div class="mobile-site-menu-panel">
+      ${PUBLIC_INFO_LINKS.map((link) => `<a href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join('')}
+    </div>
+  </details>`;
+}
+
+function renderPublicFooterLinks() {
+  return PUBLIC_INFO_LINKS.map((link) => `<a href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join('');
 }
 
 function publicShell(title: string, description: string, content: string, headExtras = '', options: PublicShellOptions = {}) {
@@ -2088,6 +2151,13 @@ function publicShell(title: string, description: string, content: string, headEx
     activeCategorySlug: options.activeCategorySlug,
     isHome: options.isHome,
   });
+  const analyticsTag = `<script async src="https://www.googletagmanager.com/gtag/js?id=G-9H0DKEPHDW"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-9H0DKEPHDW');
+  </script>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -2097,6 +2167,7 @@ function publicShell(title: string, description: string, content: string, headEx
   <meta name="description" content="${escapeHtml(description)}" />
   <link rel="icon" type="image/png" sizes="64x64" href="${escapeHtml(PUBLIC_FAVICON_URL)}" />
   <link rel="apple-touch-icon" href="${escapeHtml(PUBLIC_APPLE_ICON_URL)}" />
+  ${analyticsTag}
   ${headExtras}
   ${baseSchemas}
   <style>${publicStyles()}</style>
@@ -2105,7 +2176,7 @@ function publicShell(title: string, description: string, content: string, headEx
   <header class="site-header">
     <div class="header-top">
       <div class="wrap header-top-inner">
-        <a class="mobile-menu-anchor" href="#top-nav" aria-label="Categories">☰</a>
+        ${renderMobileInfoMenu()}
         <a class="brand-mark" href="/" aria-label="Hindiline home">
           <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
         </a>
@@ -2115,7 +2186,7 @@ function publicShell(title: string, description: string, content: string, headEx
     </div>
   </header>
   ${content}
-  <footer class="site-footer"><div class="wrap">Hindiline &copy; ${new Date().getFullYear()}</div></footer>
+  <footer class="site-footer"><div class="wrap"><span>Hindiline &copy; ${new Date().getFullYear()}</span><nav class="footer-links" aria-label="Footer links">${renderPublicFooterLinks()}</nav></div></footer>
   <script>${publicEnhancementScript()}</script>
 </body>
 </html>`;
@@ -2124,15 +2195,6 @@ function publicShell(title: string, description: string, content: string, headEx
 function publicEnhancementScript() {
   return `
     (() => {
-      const nav = document.getElementById('top-nav');
-      document.querySelectorAll('[data-nav-scroll]').forEach((button) => {
-        button.addEventListener('click', () => {
-          if (!nav) return;
-          const dir = Number(button.getAttribute('data-nav-scroll')) || 1;
-          nav.scrollBy({ left: dir * Math.max(220, nav.clientWidth * 0.7), behavior: 'smooth' });
-        });
-      });
-
       const ticker = document.querySelector('.ticker-list');
       const tickerItems = ticker ? Array.from(ticker.children) : [];
       let tickerIndex = 0;
@@ -2447,7 +2509,7 @@ function renderPublicPostCard(article: PublicArticleRow, options: { eager?: bool
 function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
   const spotlight = renderHomeCarousel(articles);
   const trending = renderHomeTrendingStrip(articles);
-  const recentArticles = articles.slice(1, 5);
+  const recentArticles = articles.slice(0, 4);
   const recent = recentArticles.length
     ? `<section class="wrap post-grid-section" id="recent-news">
         <div class="section-head">
@@ -2469,6 +2531,41 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
     `${trending}${spotlight}${recent}${empty}`,
     '',
     { categories, isHome: true },
+  );
+}
+
+function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: CategoryRow[]) {
+  const pages = {
+    about: {
+      title: 'About Us - Hindiline',
+      description: 'Hindiline ke baare me janein: Hindi/Hinglish me jobs, admit card, railway, result aur useful updates.',
+      heading: 'About Us',
+      body: `<p>Hindiline ek Hindi/Hinglish information website hai jahan readers ko jobs, admit card, railway, result, admissions aur useful public updates simple language me milte hain.</p>
+      <p>Hamari koshish hoti hai ki har article clear, readable aur practical ho, taaki readers ko important dates, eligibility, process aur next steps samajhne me aasani ho.</p>`,
+    },
+    contact: {
+      title: 'Contact Us - Hindiline',
+      description: 'Hindiline team se contact karne ke liye email aur website details dekhein.',
+      heading: 'Contact Us',
+      body: `<p>Hindiline se contact karne ke liye aap hume email kar sakte hain.</p>
+      <p><strong>Email:</strong> <a href="mailto:samoondigital@gmail.com">samoondigital@gmail.com</a></p>`,
+    },
+    privacy: {
+      title: 'Privacy Policy - Hindiline',
+      description: 'Hindiline privacy policy: analytics, cookies, user data aur contact information ka use kaise hota hai.',
+      heading: 'Privacy Policy',
+      body: `<p>Hindiline par hum website performance, user experience aur content improvement ke liye basic analytics data use kar sakte hain.</p>
+      <p>Hum personal information tabhi receive karte hain jab user khud contact form, email ya kisi direct communication ke through share kare. Is data ka use sirf communication aur website improvement ke liye hota hai.</p>
+      <p>Third-party services jaise Google Analytics cookies ya similar technologies ka use traffic insights ke liye kar sakte hain. Users apne browser settings se cookies control kar sakte hain.</p>`,
+    },
+  }[kind];
+
+  return publicShell(
+    pages.title,
+    pages.description,
+    `<main class="article"><div class="wrap"><div class="article-head"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(pages.heading)}</span></nav><h1>${escapeHtml(pages.heading)}</h1></div><div class="content">${pages.body}</div></div></main>`,
+    '',
+    { categories },
   );
 }
 
@@ -2648,18 +2745,32 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     return c.redirect(PUBLIC_FAVICON_URL, 302);
   }
 
+  if (url.pathname.startsWith('/assets/')) {
+    const key = decodeURIComponent(url.pathname.slice('/assets/'.length));
+    return servePublicAsset(c, key);
+  }
+
+  c.header('Cache-Control', 'no-store, max-age=0, must-revalidate');
+
   if (url.pathname === '/' || url.pathname === '') {
     const articles = await readPublishedArticles(c.env.ADMIN_DB);
     const categories = await readCategories(c.env.ADMIN_DB);
     return c.html(publicHomePage(articles, categories));
   }
 
-  if (url.pathname.startsWith('/assets/')) {
-    const key = decodeURIComponent(url.pathname.slice('/assets/'.length));
-    return servePublicAsset(c, key);
+  const categories = await readCategories(c.env.ADMIN_DB);
+
+  if (url.pathname === '/about-us' || url.pathname === '/about') {
+    return c.html(publicInfoPage('about', categories));
   }
 
-  const categories = await readCategories(c.env.ADMIN_DB);
+  if (url.pathname === '/contact-us' || url.pathname === '/contact') {
+    return c.html(publicInfoPage('contact', categories));
+  }
+
+  if (url.pathname === '/privacy-policy' || url.pathname === '/privacy') {
+    return c.html(publicInfoPage('privacy', categories));
+  }
 
   if (url.pathname.startsWith('/category/')) {
     const categorySlug = decodeURIComponent(url.pathname.slice('/category/'.length).replace(/^\/+|\/+$/g, ''));
@@ -3116,7 +3227,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 <label for="title">Blog Title</label>
                 <input id="title" name="title" placeholder="e.g., Waiting List Kya Hai" />
               </div>
-              <div class="field">
+              <div class="field" data-normal-mode-control>
                 <label for="writer-instructions">Writing Instructions</label>
                 <textarea id="writer-instructions" name="writer_instructions" placeholder="Example: simple Hinglish me likho, intro me clear answer do, examples include karo, job roles ko bullet points me samjhao, comparison table do, FAQs bhi rakho."></textarea>
               </div>
@@ -3127,13 +3238,14 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderCategoryOptions(categories, 'News')}
                 </select>
               </div>
+              <div class="notice ok" id="targeted-mode-note" hidden>Premium structured UI mode active hai. Is mode me backend fixed cards render karega; inline images aur long-form layout controls use nahi honge.</div>
               <div class="field">
                 <label for="author-id">Author</label>
                 <select id="author-id" name="author_id" required>
                   ${renderAuthorOptions(authors, authors.find((author) => Number(author.is_default) === 1)?.id || authors[0]?.id || 'default-author')}
                 </select>
               </div>
-              <div class="field">
+              <div class="field" data-normal-mode-control>
                 <label>AI Controls</label>
                 <div class="radio-grid">
                   ${renderOnOffControl('include-faqs', 'FAQs', true)}
@@ -3144,7 +3256,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderOnOffControl('news-angle', 'News Angle', true)}
                 </div>
               </div>
-              <div class="field">
+              <div class="field" data-normal-mode-control>
                 <label>Saved Training Apply Karein?</label>
                 <div class="radio-grid">
                   ${renderOnOffControl('use-training-title-style', 'Title Style', true)}
@@ -3152,7 +3264,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                   ${renderOnOffControl('use-training-image-style', 'Image Style', true)}
                 </div>
               </div>
-              <div class="cols-2">
+              <div class="cols-2" data-normal-mode-control>
                 <div class="field">
                   <label for="inline-image-count">Inline Images</label>
                   <input id="inline-image-count" type="number" min="0" max="4" value="0" />
@@ -3210,6 +3322,9 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
         const progressPercent = document.getElementById('gen-progress-percent');
         const progressBar = document.getElementById('gen-progress-bar');
         const progressSteps = document.getElementById('gen-progress-steps');
+        const categorySelect = document.getElementById('category');
+        const targetedModeNote = document.getElementById('targeted-mode-note');
+        const normalModeControls = Array.from(document.querySelectorAll('[data-normal-mode-control]'));
         const genSteps = [
           'Request validation and category training notes loading',
           'Source link reading or headline rewriting',
@@ -3220,6 +3335,35 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
           'R2 upload, schema and draft save'
         ];
         let progressTimer;
+
+        function normalizeTargetedCategoryKey(value) {
+          return (value || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ');
+        }
+
+        function compactTargetedCategoryKey(value) {
+          return normalizeTargetedCategoryKey(value).replace(/\\s+/g, '');
+        }
+
+        function isTargetedAdminCategory(value) {
+          const key = normalizeTargetedCategoryKey(value);
+          const compact = compactTargetedCategoryKey(value);
+          return ['भर्ती', 'job', 'jobs', 'vacancy', 'recruitment', 'bharti', 'naukri', 'sarkari naukri'].includes(key)
+            || compact === 'sarkarinaukri'
+            || ['एडमिट कार्ड', 'admit card', 'admitcard', 'hall ticket', 'hallticket'].includes(key)
+            || compact === 'एडमिटकार्ड'
+            || ['admissions', 'admission', 'प्रवेश'].includes(key);
+        }
+
+        function setArticleModeControls() {
+          const targetedMode = isTargetedAdminCategory(categorySelect.value);
+          targetedModeNote.hidden = !targetedMode;
+          normalModeControls.forEach((control) => {
+            control.hidden = targetedMode;
+            control.querySelectorAll('input, textarea, select').forEach((input) => {
+              input.disabled = targetedMode;
+            });
+          });
+        }
 
         function setProgress(index, percent) {
           progress.hidden = false;
@@ -3249,6 +3393,9 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
           setProgress(genSteps.length - 1, 100);
         }
 
+        categorySelect.addEventListener('change', setArticleModeControls);
+        setArticleModeControls();
+
         form.addEventListener('submit', async (e) => {
           e.preventDefault();
           notice.textContent = '';
@@ -3266,27 +3413,28 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
           }
           startProgress();
           try {
+            const targetedMode = isTargetedAdminCategory(categorySelect.value);
             const res = await fetch('/api/articles/generate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 sourceUrl,
                 title,
-                category: document.getElementById('category').value,
+                category: categorySelect.value,
                 authorId: document.getElementById('author-id').value,
-                includeFaqs: document.querySelector('input[name="include-faqs"]:checked').value === 'on',
-                includeToc: document.querySelector('input[name="include-toc"]:checked').value === 'on',
-                includeInternalLinks: document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
-                includeExternalLinks: document.querySelector('input[name="include-external-links"]:checked').value === 'on',
-                includeTables: document.querySelector('input[name="include-tables"]:checked').value === 'on',
-                useTrainingTitleStyle: document.querySelector('input[name="use-training-title-style"]:checked').value === 'on',
-                useTrainingArticleStyle: document.querySelector('input[name="use-training-article-style"]:checked').value === 'on',
-                useTrainingImageStyle: document.querySelector('input[name="use-training-image-style"]:checked').value === 'on',
-                writerInstructions: document.getElementById('writer-instructions').value,
-                inlineImageCount: Number(document.getElementById('inline-image-count').value) || 0,
-                imageDirection: document.getElementById('image-direction').value,
+                includeFaqs: targetedMode ? true : document.querySelector('input[name="include-faqs"]:checked').value === 'on',
+                includeToc: targetedMode ? false : document.querySelector('input[name="include-toc"]:checked').value === 'on',
+                includeInternalLinks: targetedMode ? false : document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
+                includeExternalLinks: targetedMode ? false : document.querySelector('input[name="include-external-links"]:checked').value === 'on',
+                includeTables: targetedMode ? false : document.querySelector('input[name="include-tables"]:checked').value === 'on',
+                useTrainingTitleStyle: targetedMode ? true : document.querySelector('input[name="use-training-title-style"]:checked').value === 'on',
+                useTrainingArticleStyle: targetedMode ? false : document.querySelector('input[name="use-training-article-style"]:checked').value === 'on',
+                useTrainingImageStyle: targetedMode ? false : document.querySelector('input[name="use-training-image-style"]:checked').value === 'on',
+                writerInstructions: targetedMode ? '' : document.getElementById('writer-instructions').value,
+                inlineImageCount: targetedMode ? 0 : Number(document.getElementById('inline-image-count').value) || 0,
+                imageDirection: targetedMode ? '' : document.getElementById('image-direction').value,
                 videoUrl: document.getElementById('video-url').value,
-                newsAngle: document.querySelector('input[name="news-angle"]:checked').value === 'on',
+                newsAngle: targetedMode ? true : document.querySelector('input[name="news-angle"]:checked').value === 'on',
               }),
             });
             const data = await res.json();
@@ -4378,14 +4526,7 @@ app.post('/api/articles/backfill-targeted-ui', async (c) => {
          FROM articles
          LEFT JOIN authors ON authors.id = articles.author_id
          WHERE articles.status = 'published'
-           AND (
-             articles.category IN ('भर्ती', 'एडमिट कार्ड', 'Admissions')
-             OR lower(articles.title) LIKE '%recruitment%'
-             OR lower(articles.title) LIKE '%vacancy%'
-             OR lower(articles.title) LIKE '%admit%'
-             OR lower(articles.title) LIKE '%admission%'
-             OR articles.title LIKE '%प्रवेश%'
-           )
+           AND articles.category IN ('भर्ती', 'एडमिट कार्ड', 'Admissions', 'jobs', 'job', 'vacancy', 'recruitment', 'admit card', 'admitcard', 'hall ticket', 'admission', 'प्रवेश')
          ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC
          LIMIT ?`,
       )
@@ -4835,7 +4976,6 @@ app.post('/api/articles/generate', async (c) => {
     const sourceUrl = normalizeText(body.sourceUrl);
     const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
     const source = sourceUrl ? await fetchReadablePageText(sourceUrl) : null;
-    const requestedIsTargeted = isTargetedArticleCategory(requestedCategory, manualTitle || source?.title || '');
 
     if (!source && !manualTitle) {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
@@ -4858,7 +4998,7 @@ app.post('/api/articles/generate', async (c) => {
         controls.useTrainingTitleStyle ? requestedTrainingStyles.title : [],
       );
     const title = normalizeText(articleBrief.blog_title) || manualTitle;
-    const category = requestedIsTargeted ? requestedCategory : (normalizeText(articleBrief.category) || requestedCategory);
+    const category = requestedCategory || normalizeText(articleBrief.category) || 'News';
 
     const articleId = crypto.randomUUID();
     const slug = buildSlug(title, articleId);
