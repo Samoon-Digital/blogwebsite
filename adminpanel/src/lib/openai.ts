@@ -19,10 +19,27 @@ export interface GeneratedBlogContent {
     featured_image_prompt: string;
     featured_image_alt: string;
     content: string;
+    targeted_article_data?: TargetedArticleData | null;
     inline_images?: InlineImagePlan[];
     schema_markup: Record<string, unknown>;
     word_count: number;
     keyword_density: string;
+}
+
+export interface TargetedArticleData {
+    summary?: string;
+    quickFacts?: Array<{ label: string; value: string; tone?: string }>;
+    importantDates?: Array<{ label: string; value: string; status?: string }>;
+    postsOrSeats?: Array<{ label: string; value: string; description?: string }>;
+    fees?: Array<{ label: string; value: string; note?: string }>;
+    eligibility?: Array<{ title: string; description: string; note?: string }>;
+    ageLimit?: Array<{ label: string; value: string; note?: string }>;
+    selectionProcess?: Array<{ step: string; title: string; description: string }>;
+    howToApply?: Array<{ step: string; title: string; description: string }>;
+    documents?: Array<{ title: string; description?: string }>;
+    officialLinks?: Array<{ label: string; url: string }>;
+    faqs?: Array<{ question: string; answer: string }>;
+    warningNote?: string;
 }
 
 export interface InlineImagePlan {
@@ -293,6 +310,54 @@ class OpenAIClient {
             .filter((item): item is InlineImagePlan => Boolean(item));
     }
 
+    private normalizeRecordArray<T extends Record<string, string>>(value: unknown, keys: Array<keyof T>, minRequired: Array<keyof T>): T[] {
+        if (!Array.isArray(value)) {
+            return [];
+        }
+
+        return value
+            .map((item) => {
+                const source = item as Record<string, unknown>;
+                const record: Record<string, string> = {};
+                for (const key of keys) {
+                    record[String(key)] = this.scalarText(source?.[String(key)], '');
+                }
+                return record as T;
+            })
+            .filter((item) => minRequired.every((key) => Boolean(item[key])));
+    }
+
+    normalizeTargetedArticleData(value: unknown): TargetedArticleData | null {
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+        const record = value as Record<string, unknown>;
+        const data: TargetedArticleData = {
+            summary: this.scalarText(record.summary, ''),
+            quickFacts: this.normalizeRecordArray(record.quickFacts, ['label', 'value', 'tone'], ['label', 'value']),
+            importantDates: this.normalizeRecordArray(record.importantDates, ['label', 'value', 'status'], ['label', 'value']),
+            postsOrSeats: this.normalizeRecordArray(record.postsOrSeats, ['label', 'value', 'description'], ['label', 'value']),
+            fees: this.normalizeRecordArray(record.fees, ['label', 'value', 'note'], ['label', 'value']),
+            eligibility: this.normalizeRecordArray(record.eligibility, ['title', 'description', 'note'], ['title', 'description']),
+            ageLimit: this.normalizeRecordArray(record.ageLimit, ['label', 'value', 'note'], ['label', 'value']),
+            selectionProcess: this.normalizeRecordArray(record.selectionProcess, ['step', 'title', 'description'], ['title', 'description']),
+            howToApply: this.normalizeRecordArray(record.howToApply, ['step', 'title', 'description'], ['title', 'description']),
+            documents: this.normalizeRecordArray(record.documents, ['title', 'description'], ['title']),
+            officialLinks: this.normalizeRecordArray(record.officialLinks, ['label', 'url'], ['label', 'url']),
+            faqs: this.normalizeRecordArray(record.faqs, ['question', 'answer'], ['question', 'answer']),
+            warningNote: this.scalarText(record.warningNote, ''),
+        };
+
+        const hasUsefulData = Boolean(
+            data.summary ||
+            data.quickFacts?.length ||
+            data.importantDates?.length ||
+            data.eligibility?.length ||
+            data.faqs?.length,
+        );
+        return hasUsefulData ? data : null;
+    }
+
     async generateBlogContent(
         systemPrompt: string,
         title: string,
@@ -318,11 +383,33 @@ class OpenAIClient {
             featured_image_prompt: parsed.featured_image_prompt,
             featured_image_alt: parsed.featured_image_alt || title,
             content: parsed.content,
+            targeted_article_data: this.normalizeTargetedArticleData((parsed as unknown as Record<string, unknown>).targeted_article_data),
             inline_images: this.normalizeInlineImages((parsed as unknown as Record<string, unknown>).inline_images),
             schema_markup: parsed.schema_markup || {},
             word_count: Number(parsed.word_count) || 0,
             keyword_density: parsed.keyword_density || '',
         };
+    }
+
+    async extractTargetedArticleData(input: {
+        title: string;
+        category: string;
+        contentText: string;
+    }): Promise<TargetedArticleData | null> {
+        const content = await this.createJsonResponse(
+            'You extract compact Hindi article facts for Hindiline. Return valid JSON only. Do not invent exact URLs or dates if missing; use "जल्द जारी" or "आधिकारिक वेबसाइट देखें" for unknowns.',
+            `Article title: ${input.title}
+Category: ${input.category}
+Existing article text:
+${input.contentText.slice(0, 6500)}
+
+Return JSON with one key "targeted_article_data". It must include concise Hindi/Hinglish fields:
+summary, quickFacts[{label,value,tone}], importantDates[{label,value,status}], postsOrSeats[{label,value,description}], fees[{label,value,note}], eligibility[{title,description,note}], ageLimit[{label,value,note}], selectionProcess[{step,title,description}], howToApply[{step,title,description}], documents[{title,description}], officialLinks[{label,url}], faqs[{question,answer}], warningNote.
+Keep answers short and factual. Use only details present in the text. If official URL is unknown, omit officialLinks.`,
+            2600,
+        );
+        const parsed = this.parseJson<{ targeted_article_data?: unknown }>(content, 'targeted article facts');
+        return this.normalizeTargetedArticleData(parsed.targeted_article_data);
     }
 
     async createHeadlineFromTitle(rawTitle: string, categoryHint: string, trainingNotes: string[] = []): Promise<BlogTopicResult> {

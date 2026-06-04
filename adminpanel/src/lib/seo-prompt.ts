@@ -42,6 +42,10 @@ export type SeoPromptContext = {
     tutorialVideoUrl?: string;
 };
 
+function isTargetedStructuredCategory(category: string, title = '') {
+    return /भर्ती|jobs?|vacancy|recruitment|bharti|naukri|एडमिट\s*कार्ड|admit\s*card|admitcard|hall\s*ticket|admissions?|admission|प्रवेश/i.test(`${category} ${title}`);
+}
+
 export async function buildSeoPrompt(
     db: D1Database,
     category: string,
@@ -93,6 +97,56 @@ export async function buildSeoPrompt(
     const inlineImageCount = Math.max(0, Math.min(4, context.inlineImageCount || 0));
     const tutorialVideoUrl = context.tutorialVideoUrl?.trim() || '';
     const isVacancyArticle = /vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(category);
+    const isTargetedStructuredArticle = isTargetedStructuredCategory(category, blogTitle);
+    if (isTargetedStructuredArticle) {
+        return `You are a Hindi education/jobs editor for Hindiline.
+
+Create a compact, factual Hindi article package for this category only: "${category}".
+Title: "${blogTitle}"
+
+Use the private source/user topic only as background. Do not mention source website names. Do not invent exact dates, post counts, fees, official URLs, or eligibility. If a fact is missing, write "जल्द जारी" or "आधिकारिक नोटिफिकेशन देखें".
+
+Return ONLY valid JSON with this exact shape:
+{
+  "seo_title": "Readable Hindi SEO title, 55-72 chars",
+  "meta_description": "150-160 chars Hindi summary with main date/action",
+  "featured_image_prompt": "80-130 words, clean editorial 16:9 image, one clear subject, no text overlay",
+  "featured_image_alt": "Hindi alt text",
+  "content": "<p>1-2 line Hindi summary only.</p>",
+  "targeted_article_data": {
+    "summary": "2 short Hindi sentences",
+    "quickFacts": [{"label":"कुल पद","value":"295","tone":"blue"}],
+    "importantDates": [{"label":"आवेदन शुरू","value":"16 जून 2026","status":"घोषित"}],
+    "postsOrSeats": [{"label":"Platoon Commander","value":"52 पद","description":"short detail"}],
+    "fees": [{"label":"General / OBC / EWS","value":"₹25","note":"online payment"}],
+    "eligibility": [{"title":"शैक्षणिक योग्यता","description":"short factual detail","note":"optional"}],
+    "ageLimit": [{"label":"न्यूनतम आयु","value":"21 वर्ष","note":"optional"}],
+    "selectionProcess": [{"step":"01","title":"Shortlisting","description":"short detail"}],
+    "howToApply": [{"step":"1","title":"Official website","description":"short detail"}],
+    "documents": [{"title":"Aadhaar Card","description":"आधार कार्ड"}],
+    "officialLinks": [{"label":"Official Website देखें","url":"https://example.gov.in"}],
+    "faqs": [{"question":"आवेदन कब शुरू होंगे?","answer":"short answer"}],
+    "warningNote": "अभ्यर्थी आवेदन से पहले आधिकारिक नोटिफिकेशन जरूर पढ़ें।"
+  },
+  "inline_images": [],
+  "schema_markup": {
+    "article": {"type":"schema","data":{}},
+    "breadcrumb": {"type":"schema","data":{}},
+    "faq": {"type":"schema","data":{}},
+    "organization": {"type":"schema","data":{}}
+  },
+  "word_count": 500,
+  "keyword_density": "natural"
+}
+
+Rules:
+- Fill as many targeted_article_data arrays as facts allow; keep each item short.
+- Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, faqs.
+- Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, faqs.
+- Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, faqs.
+- If exact official URL is not known, return officialLinks as [].
+- Keep token use low: no long article body HTML. Backend will render the premium UI.`;
+    }
     const vacancyArticleInstructions = isVacancyArticle
         ? `## Vacancy Article Mode
 - This is a jobs/vacancy article, so keep it short, practical, and highly scannable.

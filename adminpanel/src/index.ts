@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { getSignedCookie, setSignedCookie, deleteCookie } from 'hono/cookie';
 import { buildSeoPrompt, type SeoPromptControls, type TrainingStyleSet } from './lib/seo-prompt';
-import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage } from './lib/openai';
+import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type GeneratedImage, type TargetedArticleData } from './lib/openai';
 
 type Bindings = {
   ADMIN_DB: D1Database;
@@ -344,7 +344,213 @@ function estimateReadMinutes(value: string) {
 }
 
 function isVacancyArticle(category: string | null | undefined, title = '') {
-  return /vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(`${category || ''} ${title}`);
+  return /भर्ती|vacancy|job|jobs|bharti|recruitment|recruit|naukri|sarkari/i.test(`${category || ''} ${title}`);
+}
+
+function isAdmitCardArticle(category: string | null | undefined, title = '') {
+  return /एडमिट\s*कार्ड|admit\s*card|admitcard|hall\s*ticket/i.test(`${category || ''} ${title}`);
+}
+
+function isAdmissionsArticle(category: string | null | undefined, title = '') {
+  return /admissions?|admission|प्रवेश/i.test(`${category || ''} ${title}`);
+}
+
+function isTargetedArticleCategory(category: string | null | undefined, title = '') {
+  return isVacancyArticle(category, title) || isAdmitCardArticle(category, title) || isAdmissionsArticle(category, title);
+}
+
+function hasTargetedArticleMarkup(content: string) {
+  return /data-targeted-article=["']1["']/.test(content || '');
+}
+
+function filterTargetedItems<T>(items: T[] | undefined | null, max = 8) {
+  return Array.isArray(items) ? items.filter(Boolean).slice(0, max) : [];
+}
+
+function renderTargetedSection(title: string, icon: string, body: string) {
+  if (!body.trim()) {
+    return '';
+  }
+  return `<section class="target-section">
+    <header class="target-section-head">${renderPublicIcon(icon)}<h2>${escapeHtml(title)}</h2></header>
+    <div class="target-section-body">${body}</div>
+  </section>`;
+}
+
+function renderTargetedQuickFacts(data: TargetedArticleData) {
+  const facts = filterTargetedItems(data.quickFacts, 4);
+  if (!facts.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    'क्विक डिटेल्स',
+    'current',
+    `<div class="target-quick-grid">${facts
+      .map((item, index) => `<div class="target-quick-card tone-${escapeHtml(item.tone || String(index % 4))}">
+        <span>${escapeHtml(item.label)}</span>
+        <strong>${escapeHtml(item.value)}</strong>
+      </div>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedDates(data: TargetedArticleData) {
+  const dates = filterTargetedItems(data.importantDates, 6);
+  if (!dates.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    'महत्वपूर्ण तिथियां',
+    'current',
+    `<div class="target-timeline">${dates
+      .map((item, index) => `<div class="target-date-row">
+        <span class="target-date-dot">${index + 1}</span>
+        <div>
+          <span>${escapeHtml(item.label)}</span>
+          <strong>${escapeHtml(item.value)}</strong>
+        </div>
+        ${item.status ? `<em>${escapeHtml(item.status)}</em>` : ''}
+      </div>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedPosts(data: TargetedArticleData) {
+  const posts = filterTargetedItems(data.postsOrSeats, 6);
+  if (!posts.length) {
+    return '';
+  }
+  const totalItem = posts.find((item) => /^(total|कुल)/i.test(item.label));
+  const visiblePosts = totalItem && posts.length > 1 ? posts.filter((item) => item !== totalItem) : posts;
+  const summedTotal = visiblePosts
+    .map((item) => Number(String(item.value).replace(/[^\d]/g, '')))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .reduce((sum, value) => sum + value, 0);
+  const totalLabel = totalItem?.value || (summedTotal ? `${summedTotal} पद` : '');
+  return renderTargetedSection(
+    'पद विवरण',
+    'job',
+    `<div class="target-post-grid">${visiblePosts
+      .map((item) => `<div class="target-post-card">
+        <span>${escapeHtml(item.label)}</span>
+        <strong>${escapeHtml(item.value)}</strong>
+        ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ''}
+      </div>`)
+      .join('')}</div>${totalLabel ? `<div class="target-total"><span>कुल पद</span><strong>${escapeHtml(totalLabel)}</strong></div>` : ''}`,
+  );
+}
+
+function renderTargetedFees(data: TargetedArticleData) {
+  const fees = filterTargetedItems(data.fees, 8);
+  if (!fees.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    'आवेदन शुल्क',
+    'tag',
+    `<div class="target-fee-list">${fees
+      .map((item) => `<div class="target-fee-row">
+        <div><strong>${escapeHtml(item.label)}</strong>${item.note ? `<span>${escapeHtml(item.note)}</span>` : ''}</div>
+        <b>${escapeHtml(item.value)}</b>
+      </div>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedEligibility(data: TargetedArticleData) {
+  const items = filterTargetedItems(data.eligibility, 6);
+  const ages = filterTargetedItems(data.ageLimit, 4);
+  const eligibility = items
+    .map((item) => `<div class="target-check-card">
+      <span class="target-check-icon">${renderPublicIcon('admit')}</span>
+      <div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ''}</div>
+      <b>${renderPublicIcon('answer')}</b>
+    </div>`)
+    .join('');
+  const ageBlock = ages.length
+    ? `<div class="target-age-card">
+      <header>${renderPublicIcon('current')}<strong>आयु सीमा</strong></header>
+      <div>${ages.map((item) => `<span><small>${escapeHtml(item.label)}</small><b>${escapeHtml(item.value)}</b>${item.note ? `<em>${escapeHtml(item.note)}</em>` : ''}</span>`).join('')}</div>
+    </div>`
+    : '';
+  return renderTargetedSection('Eligibility / कौन कर सकता है अप्लाई?', 'admit', `${eligibility}${ageBlock}`);
+}
+
+function renderTargetedSteps(title: string, icon: string, items: Array<{ step: string; title: string; description: string }> | undefined) {
+  const steps = filterTargetedItems(items, 6);
+  if (!steps.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    title,
+    icon,
+    `<div class="target-step-list">${steps
+      .map((item, index) => `<div class="target-step-row">
+        <span>${escapeHtml(item.step || String(index + 1).padStart(2, '0'))}</span>
+        <div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p></div>
+      </div>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedDocuments(data: TargetedArticleData) {
+  const docs = filterTargetedItems(data.documents, 8);
+  if (!docs.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    'जरूरी Documents',
+    'folder',
+    `<div class="target-doc-grid">${docs
+      .map((item) => `<div class="target-doc-card"><strong>${escapeHtml(item.title)}</strong>${item.description ? `<span>${escapeHtml(item.description)}</span>` : ''}</div>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedOfficialLinks(data: TargetedArticleData) {
+  const links = filterTargetedItems(data.officialLinks, 2).filter((item) => /^https?:\/\//i.test(item.url));
+  if (!links.length) {
+    return '';
+  }
+  return `<div class="target-official-links">${links
+    .map((item) => `<a class="target-official-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderPublicIcon('contact')} ${escapeHtml(item.label)} ${renderPublicIcon('arrow')}</a>`)
+    .join('')}</div>`;
+}
+
+function renderTargetedFaqs(data: TargetedArticleData) {
+  const faqs = filterTargetedItems(data.faqs, 6);
+  if (!faqs.length) {
+    return '';
+  }
+  return renderTargetedSection(
+    'FAQs',
+    'answer',
+    `<div class="target-faq-list">${faqs
+      .map((item, index) => `<details class="target-faq" ${index === 0 ? 'open' : ''}>
+        <summary><span>${index === 0 ? '-' : '+'}</span>${escapeHtml(item.question)}</summary>
+        <p>${escapeHtml(item.answer)}</p>
+      </details>`)
+      .join('')}</div>`,
+  );
+}
+
+function renderTargetedArticleContent(article: Pick<PublicArticleRow | ArticleRow, 'title' | 'excerpt' | 'seo_description' | 'category'>, data: TargetedArticleData) {
+  const summary = normalizeText(data.summary) || article.excerpt || article.seo_description || '';
+  const warning = normalizeText(data.warningNote) || 'किसी भी अपडेट के लिए आधिकारिक वेबसाइट और नोटिफिकेशन जरूर देखें।';
+  return `<div class="targeted-article" data-targeted-article="1">
+    ${summary ? `<p class="target-summary">${escapeHtml(summary)}</p>` : ''}
+    ${renderTargetedQuickFacts(data)}
+    ${renderTargetedDates(data)}
+    ${renderTargetedPosts(data)}
+    ${renderTargetedFees(data)}
+    ${renderTargetedEligibility(data)}
+    ${renderTargetedSteps('चयन प्रक्रिया (Selection Process)', 'result', data.selectionProcess)}
+    ${renderTargetedSteps(isAdmitCardArticle(article.category, article.title) ? 'डाउनलोड कैसे करें?' : 'कैसे करें आवेदन?', 'syllabus', data.howToApply)}
+    ${renderTargetedDocuments(data)}
+    ${renderTargetedOfficialLinks(data)}
+    <div class="target-warning"><strong>महत्वपूर्ण सूचना</strong><p>${escapeHtml(warning)}</p></div>
+    ${renderTargetedFaqs(data)}
+  </div>`;
 }
 
 function extractHtmlBlocks(content: string, maxBlocks: number) {
@@ -391,6 +597,9 @@ function compactVacancySection(sectionHtml: string, headingText: string) {
 }
 
 function compactVacancyArticleContent(content: string) {
+  if (hasTargetedArticleMarkup(content)) {
+    return content;
+  }
   const normalizedContent = normalizeLegacyInternalArticlePaths(normalizeArticleContent(content))
     .replace(/<h2\b[^>]*>\s*(?:Table of Contents|TOC|विषय सूची)\s*<\/h2>[\s\S]*?(?=<h2\b|$)/gi, '')
     .trim();
@@ -429,6 +638,9 @@ function compactVacancyArticleContent(content: string) {
 }
 
 function getDisplayArticleContent(article: Pick<PublicArticleRow | ArticleRow, 'title' | 'category' | 'content'>) {
+  if (hasTargetedArticleMarkup(article.content || '')) {
+    return article.content || '';
+  }
   if (!isVacancyArticle(article.category, article.title)) {
     return article.content || '';
   }
@@ -1560,7 +1772,7 @@ function publicStyles() {
     .mobile-menu-anchor { display: none; }
     .header-ad-slot { display: none; }
     .header-search { margin-left: auto; width: 42px; height: 42px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
-    .header-search svg, .nav-icon svg, .nav-arrow svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .header-search svg, .nav-icon svg, .nav-arrow svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; color: var(--ink); }
     .nav-scroll { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 4px 0; }
     .nav-scroll::-webkit-scrollbar { display: none; }
@@ -1676,6 +1888,69 @@ function publicStyles() {
     .content .internal-links h3 { margin-top: 0; margin-bottom: 10px; font-size: 1.1rem; }
     .content .internal-links p { margin-bottom: 10px; }
     .content .internal-links ul { padding-left: 1.2em; margin-bottom: 0; }
+    .article.targeted-article-page .article-head, .article.targeted-article-page .article-meta-panel, .article.targeted-article-page .share-strip, .content.targeted-content { max-width: 860px; }
+    .targeted-article { display: grid; gap: 18px; color: #172033; }
+    .target-summary { margin: 0; color: #4a5568; font-size: 1.05rem; line-height: 1.72; }
+    .target-section { overflow: hidden; border: 1px solid #d8e2f1; border-radius: 8px; background: #fff; box-shadow: 0 12px 26px rgba(15, 38, 70, 0.07); }
+    .target-section-head { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 18px; background: linear-gradient(90deg, #082f73 0%, #0d4da0 100%); color: #fff; }
+    .target-section-head h2 { margin: 0; color: #fff; font-size: 1.22rem; line-height: 1.25; font-weight: 850; letter-spacing: 0; }
+    .target-section-body { padding: 16px; }
+    .target-quick-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .target-quick-card, .target-post-card, .target-doc-card { display: grid; gap: 8px; align-content: center; min-height: 118px; padding: 14px; border: 1px solid #dce5f2; border-radius: 8px; background: linear-gradient(180deg, #fff 0%, #f8fbff 100%); text-align: center; }
+    .target-quick-card span, .target-post-card span, .target-doc-card span { color: #536172; font-size: 0.88rem; line-height: 1.45; }
+    .target-quick-card strong, .target-post-card strong { color: #0a1d3d; font-size: clamp(1.28rem, 1rem + 0.8vw, 1.9rem); line-height: 1.2; }
+    .target-quick-card:nth-child(2) strong, .target-quick-card:nth-child(3) strong, .target-fee-row b, .target-date-row strong { color: var(--red); }
+    .target-timeline { display: grid; gap: 12px; position: relative; }
+    .target-date-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px; border: 1px solid #dce5f2; border-radius: 8px; background: #fff; }
+    .target-date-dot { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #e9f2ff; color: #0d4da0; font-weight: 850; }
+    .target-date-row div { display: grid; gap: 3px; }
+    .target-date-row div span { color: #4d5a6c; font-size: 0.9rem; }
+    .target-date-row strong { font-size: 1.14rem; line-height: 1.25; }
+    .target-date-row em { justify-self: end; border-radius: 999px; padding: 5px 10px; background: #eef7ec; color: #21833a; font-size: 0.78rem; font-style: normal; font-weight: 800; white-space: nowrap; }
+    .target-post-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .target-post-card p { margin: 0; color: #536172; line-height: 1.5; }
+    .target-total { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 12px; overflow: hidden; border-radius: 8px; background: var(--red); color: #fff; font-weight: 850; text-align: center; }
+    .target-total span, .target-total strong { padding: 12px; }
+    .target-total span { background: #082f73; }
+    .target-total strong { font-size: 1.5rem; }
+    .target-fee-list { display: grid; gap: 10px; }
+    .target-fee-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 1px solid #dce5f2; border-radius: 8px; background: #fff; }
+    .target-fee-row div { display: grid; gap: 2px; }
+    .target-fee-row span { color: #667085; font-size: 0.86rem; }
+    .target-fee-row b { font-size: 1.35rem; white-space: nowrap; }
+    .target-check-card { display: grid; grid-template-columns: 72px minmax(0, 1fr) 34px; align-items: center; gap: 14px; padding: 16px; border: 1px solid #dce5f2; border-radius: 8px; background: #fff; margin-bottom: 12px; }
+    .target-check-icon { width: 58px; height: 58px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #eef4ff; color: #0d4da0; }
+    .target-check-card strong { display: block; font-size: 1.12rem; line-height: 1.3; color: #0a1d3d; }
+    .target-check-card p { margin: 5px 0 0; color: #4d5a6c; line-height: 1.58; }
+    .target-check-card small { display: block; margin-top: 5px; color: var(--red); font-weight: 800; }
+    .target-check-card > b { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #0a397d; color: #fff; }
+    .target-age-card { overflow: hidden; border: 1px solid #dce5f2; border-radius: 8px; background: #f8fbff; }
+    .target-age-card header { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #dce5f2; color: #0a397d; }
+    .target-age-card > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
+    .target-age-card span { display: grid; gap: 4px; padding: 16px; text-align: center; }
+    .target-age-card span + span { border-left: 1px solid #dce5f2; }
+    .target-age-card small { color: #667085; }
+    .target-age-card b { color: #0a1d3d; font-size: 1.45rem; }
+    .target-age-card em { color: #667085; font-size: 0.82rem; font-style: normal; }
+    .target-step-list { display: grid; gap: 12px; }
+    .target-step-row { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 14px; align-items: center; padding: 12px; border: 1px solid #dce5f2; border-radius: 8px; background: #fff; }
+    .target-step-row > span { width: 46px; height: 46px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--red); color: #fff; font-weight: 900; }
+    .target-step-row:nth-child(even) > span { background: #0d4da0; }
+    .target-step-row strong { color: #0a1d3d; font-size: 1.02rem; }
+    .target-step-row p { margin: 4px 0 0; color: #4d5a6c; line-height: 1.55; }
+    .target-doc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .target-doc-card strong { color: #0a1d3d; font-size: 1rem; line-height: 1.35; }
+    .target-official-links { display: grid; gap: 10px; }
+    .target-official-link { min-height: 52px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 0 16px; border-radius: 8px; background: linear-gradient(90deg, #0d3b89, #174fa7); color: #fff; font-weight: 850; box-shadow: 0 10px 22px rgba(13, 77, 160, 0.2); }
+    .target-warning { padding: 16px; border: 1px solid #ffb4b4; border-radius: 8px; background: #fff7f7; color: #334155; }
+    .target-warning strong { display: block; color: var(--red); margin-bottom: 4px; }
+    .target-warning p { margin: 0; line-height: 1.58; }
+    .target-faq-list { display: grid; gap: 10px; }
+    .target-faq { border: 1px solid #dce5f2; border-radius: 8px; background: #fff; overflow: hidden; }
+    .target-faq summary { min-height: 54px; display: flex; align-items: center; gap: 12px; padding: 0 14px; cursor: pointer; color: #0a1d3d; font-weight: 850; list-style: none; }
+    .target-faq summary::-webkit-details-marker { display: none; }
+    .target-faq summary span { width: 32px; height: 32px; flex: 0 0 auto; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #0d4da0; color: #fff; }
+    .target-faq p { margin: 0; padding: 0 16px 16px 58px; color: #4d5a6c; line-height: 1.64; }
     .profile { padding: 28px 0 52px; display: grid; gap: 20px; }
     .profile-head { display: flex; gap: 16px; align-items: center; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
     .profile-head img { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border); background: var(--soft); }
@@ -1705,6 +1980,8 @@ function publicStyles() {
       .home-slide-media img, .slide-empty-image { min-height: 220px; }
       .slider-controls { left: 18px; bottom: 16px; }
       .hero { padding: 20px 0 14px; }
+      .content.targeted-content { max-width: 100%; }
+      .target-quick-grid, .target-post-grid, .target-doc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 620px) {
       .wrap { width: min(1240px, calc(100% - 18px)); }
@@ -1722,6 +1999,23 @@ function publicStyles() {
       .article-meta-panel { align-items: flex-start; }
       .article .dek { font-size: 1.07rem; }
       .share-link { min-height: 36px; padding: 0 12px; font-size: 0.84rem; }
+      .targeted-article { gap: 14px; }
+      .target-summary { font-size: 0.96rem; }
+      .target-section-head { min-height: 48px; padding: 0 14px; }
+      .target-section-head h2 { font-size: 1.04rem; }
+      .target-section-body { padding: 12px; }
+      .target-quick-grid, .target-post-grid, .target-doc-grid { grid-template-columns: 1fr; gap: 10px; }
+      .target-quick-card, .target-post-card, .target-doc-card { min-height: auto; padding: 13px; }
+      .target-date-row { grid-template-columns: 36px minmax(0, 1fr); }
+      .target-date-row em { grid-column: 2; justify-self: start; }
+      .target-check-card { grid-template-columns: 52px minmax(0, 1fr); gap: 10px; padding: 12px; }
+      .target-check-icon { width: 46px; height: 46px; }
+      .target-check-card > b { display: none; }
+      .target-age-card > div { grid-template-columns: 1fr; }
+      .target-age-card span + span { border-left: 0; border-top: 1px solid #dce5f2; }
+      .target-step-row { grid-template-columns: 42px minmax(0, 1fr); gap: 10px; padding: 10px; }
+      .target-step-row > span { width: 38px; height: 38px; }
+      .target-faq p { padding-left: 16px; }
     }
   `;
 }
@@ -2290,6 +2584,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
   const canonicalUrl = article.canonical_url || publicArticleUrl(article.slug);
   const displayContent = getDisplayArticleContent(article);
   article.content = displayContent;
+  const isTargetedPage = hasTargetedArticleMarkup(article.content || '') && isTargetedArticleCategory(article.category, article.title);
   const image = article.featured_image_url
     ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 960))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 780px) calc(100vw - 24px), 760px" width="1080" height="608" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
@@ -2311,7 +2606,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
   return publicShell(
     article.seo_title || article.title,
     article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
-    `${previewBanner}<main class="wrap article">
+    `${previewBanner}<main class="wrap article${isTargetedPage ? ' targeted-article-page' : ''}">
       <header class="article-head">
         <nav class="breadcrumbs" aria-label="Breadcrumb">
           ${breadcrumbTrail}
@@ -2335,7 +2630,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
         </div>
       </section>
       ${shareButtons}
-      <article class="content">${article.content}</article>
+      <article class="content${isTargetedPage ? ' targeted-content' : ''}">${article.content}</article>
     </main>`,
     articleHeadExtras(article, preview, categorySlug),
     { categories, activeCategorySlug: categorySlug },
@@ -4018,7 +4313,7 @@ app.patch('/api/articles/:id', async (c) => {
   const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
   content = normalizeArticleContent(content);
   content = applyArticleVideoSection(content, videoUrl, title);
-  if (isVacancyArticle(category, title)) {
+  if (!hasTargetedArticleMarkup(content) && isVacancyArticle(category, title)) {
     content = compactVacancyArticleContent(content);
   }
   const now = new Date().toISOString();
@@ -4052,6 +4347,89 @@ app.delete('/api/articles/:id', async (c) => {
 
   await c.env.ADMIN_DB.prepare('DELETE FROM articles WHERE id = ?').bind(c.req.param('id')).run();
   return c.json({ ok: true });
+});
+
+app.post('/api/articles/backfill-targeted-ui', async (c) => {
+  const session = await requireSession(c);
+
+  if (!session) {
+    return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  }
+
+  const openaiKey = c.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    return c.json({ ok: false, message: 'OpenAI API key not configured' }, 500);
+  }
+
+  const body: { limit?: number; force?: boolean } = await c.req.json<{ limit?: number; force?: boolean }>().catch(() => ({}));
+  const limit = Math.max(1, Math.min(20, Number(body.limit) || 10));
+  const force = body.force === true;
+  initOpenAIClient({
+    apiKey: openaiKey,
+    trackingId: c.env.OPENAI_TRACKING_ID,
+    textModel: c.env.OPENAI_TEXT_MODEL,
+    imageModel: c.env.OPENAI_IMAGE_MODEL,
+  });
+  const openaiClient = getOpenAIClient();
+  const articles = await queryAll<ArticleRow>(
+    c.env.ADMIN_DB
+      .prepare(
+        `SELECT articles.id, articles.title, articles.slug, articles.excerpt, articles.content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, articles.status, articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, articles.created_at, articles.updated_at
+         FROM articles
+         LEFT JOIN authors ON authors.id = articles.author_id
+         WHERE articles.status = 'published'
+           AND (
+             articles.category IN ('भर्ती', 'एडमिट कार्ड', 'Admissions')
+             OR lower(articles.title) LIKE '%recruitment%'
+             OR lower(articles.title) LIKE '%vacancy%'
+             OR lower(articles.title) LIKE '%admit%'
+             OR lower(articles.title) LIKE '%admission%'
+             OR articles.title LIKE '%प्रवेश%'
+           )
+         ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC
+         LIMIT ?`,
+      )
+      .bind(limit),
+  );
+  const results: Array<{ id: string; title: string; status: string; message?: string }> = [];
+
+  for (const article of articles) {
+    if (!isTargetedArticleCategory(article.category, article.title)) {
+      results.push({ id: article.id, title: article.title, status: 'skipped', message: 'Not a targeted category' });
+      continue;
+    }
+    if (!force && hasTargetedArticleMarkup(article.content || '')) {
+      results.push({ id: article.id, title: article.title, status: 'skipped', message: 'Already targeted UI' });
+      continue;
+    }
+
+    const targetedData = await openaiClient.extractTargetedArticleData({
+      title: article.title,
+      category: article.category || 'भर्ती',
+      contentText: stripHtml(article.content || '').slice(0, 7000),
+    });
+    if (!targetedData) {
+      results.push({ id: article.id, title: article.title, status: 'failed', message: 'No targeted facts returned' });
+      continue;
+    }
+
+    const videoUrl = extractArticleVideoUrl(article.content || '');
+    let content = renderTargetedArticleContent(article, targetedData);
+    content = applyArticleVideoSection(content, videoUrl, article.title);
+    const excerpt = makeExcerpt(targetedData.summary || article.excerpt || article.seo_description || content, article.title);
+    await c.env.ADMIN_DB
+      .prepare('UPDATE articles SET content = ?, excerpt = ?, updated_at = ? WHERE id = ?')
+      .bind(content, excerpt, new Date().toISOString(), article.id)
+      .run();
+    results.push({ id: article.id, title: article.title, status: 'updated' });
+  }
+
+  return c.json({
+    ok: true,
+    total: results.length,
+    updated: results.filter((item) => item.status === 'updated').length,
+    results,
+  });
 });
 
 app.post('/api/categories', async (c) => {
@@ -4457,6 +4835,7 @@ app.post('/api/articles/generate', async (c) => {
     const sourceUrl = normalizeText(body.sourceUrl);
     const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
     const source = sourceUrl ? await fetchReadablePageText(sourceUrl) : null;
+    const requestedIsTargeted = isTargetedArticleCategory(requestedCategory, manualTitle || source?.title || '');
 
     if (!source && !manualTitle) {
       return c.json({ ok: false, message: 'Paste link ya Blog Title me se ek required hai' }, 400);
@@ -4479,7 +4858,7 @@ app.post('/api/articles/generate', async (c) => {
         controls.useTrainingTitleStyle ? requestedTrainingStyles.title : [],
       );
     const title = normalizeText(articleBrief.blog_title) || manualTitle;
-    const category = normalizeText(articleBrief.category) || requestedCategory;
+    const category = requestedIsTargeted ? requestedCategory : (normalizeText(articleBrief.category) || requestedCategory);
 
     const articleId = crypto.randomUUID();
     const slug = buildSlug(title, articleId);
@@ -4513,6 +4892,7 @@ app.post('/api/articles/generate', async (c) => {
     if (!content) {
       throw new Error('OpenAI blog response produced an empty article body');
     }
+    const targetedData = isTargetedArticleCategory(category, title) ? blogContent.targeted_article_data : null;
     const image = await openaiClient.generateFeaturedImage(
       blogContent.featured_image_prompt,
       title,
@@ -4543,12 +4923,24 @@ app.post('/api/articles/generate', async (c) => {
         caption: plan.caption || '',
       });
     }
-    content = injectInlineImagesIntoArticle(content, inlineImagesToRender);
-    if (controls.includeInternalLinks) {
-      content = ensureArticleInternalLinks(content, relatedArticles, category);
+    if (targetedData) {
+      content = renderTargetedArticleContent(
+        {
+          title,
+          excerpt: blogContent.meta_description,
+          seo_description: blogContent.meta_description,
+          category,
+        },
+        targetedData,
+      );
+    } else {
+      content = injectInlineImagesIntoArticle(content, inlineImagesToRender);
+      if (controls.includeInternalLinks) {
+        content = ensureArticleInternalLinks(content, relatedArticles, category);
+      }
     }
     content = applyArticleVideoSection(content, videoUrl, title);
-    if (isVacancyArticle(category, title)) {
+    if (!targetedData && isVacancyArticle(category, title)) {
       content = compactVacancyArticleContent(content);
     }
     const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
