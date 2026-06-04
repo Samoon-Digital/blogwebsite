@@ -211,6 +211,7 @@ const SESSION_COOKIE = 'samoondgital_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const PUBLIC_SITE_ORIGIN = 'https://hindiline.com';
 const PUBLIC_LOGO_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-320.png`;
+const PUBLIC_LOGO_AVIF_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-320.avif`;
 const PUBLIC_FAVICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-64.png`;
 const PUBLIC_APPLE_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
 const PUBLIC_SITE_NAME = 'Hindiline';
@@ -296,8 +297,31 @@ function normalizeText(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+const HINDI_SLUG_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/प्लाटून\s*कमांडर/gi, ' platoon commander '],
+  [/ब्लॉक\s*ऑर्गनाइजर/gi, ' block organizer '],
+  [/फॉरेस्ट\s*गार्ड/gi, ' forest guard '],
+  [/फायर\s*गार्ड/gi, ' fire guard '],
+  [/होम\s*गार्ड/gi, ' home guard '],
+  [/केन\s*सुपरवाइजर/gi, ' cane supervisor '],
+  [/फील्ड\s*रिप्रेजेंटेटिव/gi, ' field representative '],
+  [/मैनेजमेंट\s*ट्रेनी/gi, ' management trainee '],
+  [/टेक्निकल\s*ग्रेजुएट\s*कोर्स/gi, ' technical graduate course '],
+  [/भारतीय\s*सेना/gi, ' indian army '],
+  [/बिहार\s*पुलिस/gi, ' bihar police '],
+  [/रेलवे/gi, ' railway '],
+  [/रक्षक/gi, ' guard '],
+  [/भर्ती/gi, ' recruitment '],
+  [/प्रवेश\s*पत्र|एडमिट\s*कार्ड/gi, ' admit card '],
+  [/रिजल्ट|परिणाम/gi, ' result '],
+];
+
+function transliterateSlugText(value: string) {
+  return HINDI_SLUG_REPLACEMENTS.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), value);
+}
+
 function slugify(value: string) {
-  return value
+  return transliterateSlugText(value)
     .normalize('NFKD')
     .toLowerCase()
     .trim()
@@ -306,6 +330,108 @@ function slugify(value: string) {
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+const ARTICLE_SLUG_STOP_WORDS = new Set([
+  'aaj',
+  'age',
+  'age-limit',
+  'apply',
+  'application',
+  'bharti',
+  'check',
+  'date',
+  'detail',
+  'details',
+  'eligibility',
+  'fee',
+  'fees',
+  'form',
+  'from',
+  'june',
+  'july',
+  'last',
+  'online',
+  'pad',
+  'pado',
+  'posts',
+  'post',
+  'qualification',
+  'shuru',
+  'start',
+  'started',
+  'tak',
+  'vacancy',
+]);
+
+const MEANINGFUL_RECRUITMENT_ROLES = new Set([
+  'apprentice',
+  'block',
+  'cane',
+  'cil',
+  'commander',
+  'field',
+  'fire',
+  'food',
+  'forest',
+  'guard',
+  'havildar',
+  'home',
+  'instructor',
+  'management',
+  'mt',
+  'organizer',
+  'platoon',
+  'representative',
+  'supervisor',
+  'tes',
+  'tgc',
+  'trainee',
+]);
+
+function cleanSlugToken(token: string) {
+  return token.replace(/[^a-z0-9]/g, '');
+}
+
+function uniqueUsefulTokens(value: string, options: { allowNumbers?: boolean; limit?: number } = {}) {
+  const allowNumbers = Boolean(options.allowNumbers);
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const rawToken of slugify(value).split('-')) {
+    const token = cleanSlugToken(rawToken);
+    if (!token || seen.has(token)) continue;
+    if (!allowNumbers && /^\d+$/.test(token)) continue;
+    if (ARTICLE_SLUG_STOP_WORDS.has(token)) continue;
+    seen.add(token);
+    tokens.push(token);
+    if (options.limit && tokens.length >= options.limit) break;
+  }
+  return tokens;
+}
+
+function buildArticleSlug(title: string, fallbackId: string) {
+  const normalized = transliterateSlugText(title);
+  const yearMatch = normalized.match(/\b(20\d{2})\b/);
+  const year = yearMatch?.[1] || '';
+  const recruitmentMatch = normalized.match(/^(.*?\brecruitment\b)\s*(20\d{2})?/i);
+
+  if (recruitmentMatch) {
+    const beforeRecruitment = recruitmentMatch[1].replace(/\brecruitment\b/i, '');
+    const afterRecruitment = normalized.slice(recruitmentMatch[0].length);
+    const baseTokens = uniqueUsefulTokens(beforeRecruitment, { allowNumbers: true, limit: 7 });
+    const roleTokens = uniqueUsefulTokens(afterRecruitment, { allowNumbers: false, limit: 5 })
+      .filter((token) => MEANINGFUL_RECRUITMENT_ROLES.has(token));
+    const baseHasRole = baseTokens.some((token) => MEANINGFUL_RECRUITMENT_ROLES.has(token));
+    const extraRoleTokens = roleTokens.filter((token) => !baseTokens.includes(token));
+    const tokens = [...baseTokens, ...(baseHasRole ? extraRoleTokens : roleTokens), 'recruitment'];
+    if (year) tokens.push(year);
+    const slug = tokens.filter(Boolean).join('-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (slug) return slug;
+  }
+
+  const fallbackTokens = uniqueUsefulTokens(normalized, { allowNumbers: true, limit: 9 });
+  const fallbackSlug = fallbackTokens.join('-');
+  return fallbackSlug || `article-${fallbackId.slice(0, 8)}`;
 }
 
 function normalizePlacementText(value: string) {
@@ -329,7 +455,7 @@ function escapeRegExp(value: string) {
 }
 
 function buildSlug(title: string, fallbackId: string) {
-  return slugify(title) || `article-${fallbackId.slice(0, 8)}`;
+  return buildArticleSlug(title, fallbackId);
 }
 
 function clampInlineImageCount(value: unknown) {
@@ -1685,6 +1811,19 @@ async function readPublishedArticles(db: D1Database) {
   );
 }
 
+async function readPublishedArticlesPage(db: D1Database, page = 1, perPage = 12) {
+  const safePage = Math.max(1, Math.floor(page));
+  const safePerPage = Math.max(4, Math.min(24, Math.floor(perPage)));
+  const offset = (safePage - 1) * safePerPage;
+  return queryAll<PublicArticleRow>(
+    db
+      .prepare(
+        `SELECT ${articleSelectColumns()} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT ? OFFSET ?`,
+      )
+      .bind(safePerPage + 1, offset),
+  );
+}
+
 async function readPublishedArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
@@ -2033,30 +2172,31 @@ function publicStyles() {
     a { color: inherit; text-decoration: none; }
     img { max-width: 100%; display: block; }
     button { font: inherit; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     .site-header { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,0.98); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); box-shadow: 0 8px 28px rgba(15, 38, 70, 0.06); }
     .wrap { width: min(1240px, calc(100% - 28px)); margin: 0 auto; }
     .header-top { background: #fff; }
-    .header-top-inner { min-height: 68px; display: flex; align-items: center; gap: 18px; padding: 8px 0; }
+    .header-top-inner { min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 5px 0; }
     .brand-mark { display: inline-flex; align-items: center; flex-shrink: 0; }
-    .brand-logo { width: auto; height: 50px; object-fit: contain; }
+    .brand-logo { width: auto; height: 44px; object-fit: contain; }
     .mobile-site-menu { display: none; position: relative; }
-    .mobile-site-menu summary { list-style: none; display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; color: var(--text); cursor: pointer; }
+    .mobile-site-menu summary { list-style: none; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; color: var(--text); cursor: pointer; }
     .mobile-site-menu summary::-webkit-details-marker { display: none; }
     .mobile-site-menu-panel { position: absolute; left: 0; top: calc(100% + 10px); width: min(260px, 86vw); display: grid; gap: 4px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 22px 44px rgba(16, 24, 40, 0.16); }
     .mobile-site-menu-panel a { padding: 11px 12px; border-radius: 7px; color: var(--ink); font-weight: 760; font-size: 0.93rem; }
     .mobile-site-menu-panel a:hover { background: #f4f7fb; color: var(--red); }
     .header-ad-slot { display: none; }
-    .header-search { margin-left: auto; width: 42px; height: 42px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
-    .header-search svg, .mobile-site-menu svg, .nav-icon svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .header-search { margin-left: auto; width: 38px; height: 38px; border: 0; border-radius: 11px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
+    .header-search svg, .mobile-site-menu svg, .nav-icon svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--ink); }
-    .nav-scroll { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 4px 0; }
+    .nav-scroll { display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 3px 0; }
     .nav-scroll::-webkit-scrollbar { display: none; }
-    .top-nav-link { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; padding: 0 12px; border-radius: 999px; font-size: 0.9rem; font-weight: 760; white-space: nowrap; color: #111827; transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
+    .top-nav-link { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 10px; border-radius: 999px; font-size: 0.86rem; font-weight: 760; white-space: nowrap; color: #111827; transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
     .top-nav-link:hover { background: #f3f6fb; color: var(--red); }
-    .top-nav-link.active, .top-nav-link.home-link.active { background: var(--red); color: #fff; box-shadow: 0 8px 16px rgba(225, 25, 36, 0.2); }
+    .top-nav-link.active, .top-nav-link.home-link.active { background: var(--red); color: #fff; box-shadow: 0 6px 14px rgba(225, 25, 36, 0.18); }
     .top-nav-link.home-link { color: var(--red); }
-    .nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: 0 0 auto; }
-    .nav-more summary { width: 34px; height: 34px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+    .nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex: 0 0 auto; }
+    .nav-more summary { width: 32px; height: 32px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
     .nav-more { position: relative; flex: 0 0 auto; }
     .nav-more summary { list-style: none; }
     .nav-more summary::-webkit-details-marker { display: none; }
@@ -2070,7 +2210,7 @@ function publicStyles() {
     .ticker-list { display: flex; align-items: center; gap: 24px; list-style: none; transition: transform 0.28s ease; }
     .ticker-list li { flex: 0 0 auto; max-width: 430px; color: rgba(255,255,255,0.95); font-size: 0.92rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ticker-list li::before { content: ""; display: inline-block; width: 4px; height: 4px; margin: 0 12px 2px 0; border-radius: 50%; background: #fff; opacity: 0.9; }
-    .ticker-arrow { width: 30px; height: 30px; border: 0; border-radius: 50%; background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+    .ticker-arrow { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
     .home-spotlight { padding: 28px 0 10px; }
     .home-carousel { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(105deg, #f7fbff 0%, #ffffff 48%, #edf5ff 100%); box-shadow: 0 20px 45px rgba(15, 38, 70, 0.08); }
     .home-slides { display: flex; transition: transform 0.42s ease; }
@@ -2086,10 +2226,11 @@ function publicStyles() {
     .home-slide-media img { width: 100%; height: 100%; min-height: 340px; object-fit: cover; }
     .slide-empty-image { width: 100%; min-height: 340px; display: grid; place-items: center; background: linear-gradient(135deg, #e9f3ff, #fff6e0); color: var(--accent); font-size: 1.5rem; font-weight: 850; }
     .slider-controls { position: static; display: inline-flex; align-items: center; gap: 12px; padding: 0 42px 22px; }
-    .slider-dots { display: inline-flex; align-items: center; gap: 12px; }
-    .slider-dot { width: 8px; height: 8px; border: 0; border-radius: 50%; background: #c6ced9; cursor: pointer; }
-    .slider-dot.active { width: 18px; border-radius: 999px; background: var(--red); }
-    .slide-arrow { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.08); }
+    .slider-dots { display: inline-flex; align-items: center; gap: 4px; }
+    .slider-dot { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; cursor: pointer; position: relative; display: inline-flex; align-items: center; justify-content: center; }
+    .slider-dot::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #c6ced9; }
+    .slider-dot.active::before { width: 18px; border-radius: 999px; background: var(--red); }
+    .slide-arrow { width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.08); }
     .slide-arrow.prev svg { transform: rotate(180deg); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .section-head h2 { font-size: clamp(1.25rem, 1.04rem + 0.42vw, 1.62rem); line-height: 1.2; font-weight: 850; position: relative; padding-bottom: 10px; }
@@ -2260,16 +2401,18 @@ function publicStyles() {
     .footer-links { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
     .footer-links a { color: var(--ink); font-weight: 700; }
     .footer-links a:hover { color: var(--red); }
+    .load-sentinel { min-height: 48px; display: grid; place-items: center; color: var(--muted); font-weight: 700; }
+    .load-status { color: var(--muted); font-size: 0.92rem; }
     @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
     @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
     @media (max-width: 820px) {
-      .header-top-inner { display: grid; grid-template-columns: auto 1fr auto; min-height: 64px; gap: 10px; padding: 8px 0; }
+      .header-top-inner { display: grid; grid-template-columns: auto 1fr auto; min-height: 54px; gap: 8px; padding: 5px 0; }
       .mobile-site-menu { grid-column: 1; grid-row: 1; display: inline-flex; }
       .brand-mark { grid-column: 2; grid-row: 1; }
       .header-search { grid-column: 3; grid-row: 1; margin-left: 0; }
       .section-nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1fr) auto; }
-      .brand-logo { height: 42px; }
-      .top-nav-link { min-height: 38px; padding: 0 11px; font-size: 0.88rem; }
+      .brand-logo { height: 38px; }
+      .top-nav-link { min-height: 32px; padding: 0 8px; font-size: 0.82rem; }
       .ticker-inner { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; min-height: 36px; }
       .ticker-label { min-height: 26px; padding: 0 10px; font-size: 0.76rem; }
       .ticker-list { gap: 0; }
@@ -2280,17 +2423,17 @@ function publicStyles() {
       .home-slide-media { min-height: 220px; order: -1; }
       .home-slide-media img, .slide-empty-image { min-height: 220px; }
       .slider-controls { padding: 0 18px 16px; }
-      .footer-links { display: none; }
+      .footer-links { display: flex; width: 100%; gap: 12px; }
       .hero { padding: 20px 0 14px; }
       .content.targeted-content { max-width: 100%; }
       .target-quick-grid, .target-post-grid, .target-doc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 620px) {
       .wrap { width: min(1240px, calc(100% - 18px)); }
-      .header-search { width: 38px; height: 38px; border-radius: 11px; }
+      .header-search { width: 34px; height: 34px; border-radius: 10px; }
       .nav-more div { right: -44px; }
       .hero-actions { gap: 8px; }
-      .hero-btn { width: 100%; min-height: 40px; }
+      .hero-btn { width: auto; min-height: 38px; padding: 0 14px; }
       .home-slide h1 { font-size: 1.55rem; line-height: 1.24; }
       .home-slide p { font-size: 0.92rem; }
       .post-card-body { padding: 14px 14px 16px; }
@@ -2369,9 +2512,9 @@ function categoryIconName(categoryName: string) {
 }
 
 const PUBLIC_INFO_LINKS = [
-  { href: '/about-us', label: 'About Us' },
-  { href: '/contact-us', label: 'Contact Us' },
-  { href: '/privacy-policy', label: 'Privacy Policy' },
+  { href: '/about-us', label: 'हमारे बारे में' },
+  { href: '/contact-us', label: 'संपर्क करें' },
+  { href: '/privacy-policy', label: 'गोपनीयता नीति' },
 ];
 
 function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlug?: string | null; isHome?: boolean } = {}) {
@@ -2414,15 +2557,22 @@ function publicShell(title: string, description: string, content: string, headEx
     activeCategorySlug: options.activeCategorySlug,
     isHome: options.isHome,
   });
-  const analyticsTag = `<script async src="https://www.googletagmanager.com/gtag/js?id=G-9H0DKEPHDW"></script>
-  <script>
+  const analyticsTag = `<script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-9H0DKEPHDW');
+    window.__hindilineLoadAnalytics = function(){
+      if (window.__hindilineAnalyticsLoaded) return;
+      window.__hindilineAnalyticsLoaded = true;
+      var script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://www.googletagmanager.com/gtag/js?id=G-9H0DKEPHDW';
+      document.head.appendChild(script);
+      gtag('js', new Date());
+      gtag('config', 'G-9H0DKEPHDW');
+    };
   </script>`;
   return `<!doctype html>
-<html lang="en">
+<html lang="hi">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -2442,14 +2592,19 @@ function publicShell(title: string, description: string, content: string, headEx
       <div class="wrap header-top-inner">
         ${renderMobileInfoMenu()}
         <a class="brand-mark" href="/" aria-label="Hindiline home">
-          <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
+          <picture>
+            <source srcset="${escapeHtml(PUBLIC_LOGO_AVIF_URL)}" type="image/avif" />
+            <img class="brand-logo" src="${escapeHtml(PUBLIC_LOGO_URL)}" width="320" height="78" alt="Hindiline" />
+          </picture>
         </a>
         ${navMarkup}
         <a class="header-search" href="/search" aria-label="Search Hindiline">${renderPublicIcon('search')}</a>
       </div>
     </div>
   </header>
-  ${content}
+  <main id="content">
+    ${content}
+  </main>
   <footer class="site-footer"><div class="wrap"><span>Hindiline &copy; ${new Date().getFullYear()}</span><nav class="footer-links" aria-label="Footer links">${renderPublicFooterLinks()}</nav></div></footer>
   <script>${publicEnhancementScript()}</script>
 </body>
@@ -2459,6 +2614,35 @@ function publicShell(title: string, description: string, content: string, headEx
 function publicEnhancementScript() {
   return `
     (() => {
+      const loadAnalytics = () => {
+        if (typeof window.__hindilineLoadAnalytics === 'function') window.__hindilineLoadAnalytics();
+      };
+      const analyticsEvents = ['pointerdown', 'keydown', 'scroll'];
+      analyticsEvents.forEach((eventName) => {
+        window.addEventListener(eventName, loadAnalytics, { once: true, passive: true });
+      });
+      if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(loadAnalytics, { timeout: 3500 });
+      } else {
+        setTimeout(loadAnalytics, 3500);
+      }
+
+      const closeOpenMenus = (event) => {
+        document.querySelectorAll('details.mobile-site-menu[open], details.nav-more[open]').forEach((menu) => {
+          if (!event || !menu.contains(event.target)) menu.removeAttribute('open');
+        });
+      };
+      document.addEventListener('pointerdown', closeOpenMenus, { passive: true });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeOpenMenus();
+      });
+      document.querySelectorAll('details.mobile-site-menu a, details.nav-more a').forEach((link) => {
+        link.addEventListener('click', () => {
+          const menu = link.closest('details');
+          if (menu) menu.removeAttribute('open');
+        });
+      });
+
       const ticker = document.querySelector('.ticker-list');
       const tickerItems = ticker ? Array.from(ticker.children) : [];
       let tickerIndex = 0;
@@ -2852,8 +3036,7 @@ function renderHomeSlide(article: PublicArticleRow, index: number) {
       <h1>${escapeHtml(article.title)}</h1>
       <p>${escapeHtml(summary)}</p>
       <div class="hero-actions">
-        <a class="hero-btn primary" href="/${escapeHtml(article.slug)}">पूरी जानकारी पढ़ें ${renderPublicIcon('arrow')}</a>
-        <a class="hero-btn" href="/${escapeHtml(article.slug)}#notification">नोटिफिकेशन देखें ${renderPublicIcon('bell')}</a>
+        <a class="hero-btn primary" href="/${escapeHtml(article.slug)}">पूरी जानकारी पढ़ें<span class="sr-only">: ${escapeHtml(article.title)}</span> ${renderPublicIcon('arrow')}</a>
       </div>
     </div>
     <div class="home-slide-media">${image}</div>
@@ -2940,7 +3123,7 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
           <div>
             <h2>हाल में जोड़े गए लेख</h2>
           </div>
-          <a class="section-link" href="/">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
+          <a class="section-link" href="/articles">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
         </div>
         <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')}</div>
       </section>`
@@ -2966,33 +3149,40 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
 function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: CategoryRow[]) {
   const pages = {
     about: {
-      title: 'About Us - Hindiline',
-      description: 'Hindiline ke baare me janein: Hindi/Hinglish me jobs, admit card, railway, result aur useful updates.',
-      heading: 'About Us',
-      body: `<p>Hindiline ek Hindi/Hinglish information website hai jahan readers ko jobs, admit card, railway, result, admissions aur useful public updates simple language me milte hain.</p>
-      <p>Hamari koshish hoti hai ki har article clear, readable aur practical ho, taaki readers ko important dates, eligibility, process aur next steps samajhne me aasani ho.</p>`,
+      title: 'हमारे बारे में - हिंदीलाइन',
+      description: 'हिंदीलाइन के बारे में जानें: सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं की उपयोगी जानकारी।',
+      heading: 'हमारे बारे में',
+      body: `<p>हिंदीलाइन एक हिंदी समाचार और जानकारी वेबसाइट है, जहां सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश, परीक्षा अपडेट और सरकारी योजनाओं से जुड़ी महत्वपूर्ण जानकारी सरल भाषा में प्रकाशित की जाती है।</p>
+      <p>हमारा उद्देश्य पाठकों तक उपयोगी अपडेट साफ, भरोसेमंद और समझने योग्य रूप में पहुंचाना है, ताकि वे पात्रता, तारीख, आवेदन प्रक्रिया, शुल्क, चयन प्रक्रिया और आधिकारिक लिंक जैसी जरूरी बातें जल्दी समझ सकें।</p>
+      <p>हिंदीलाइन पर प्रकाशित जानकारी तैयार करते समय आधिकारिक नोटिफिकेशन, विभागीय अपडेट और विश्वसनीय स्रोतों को प्राथमिकता दी जाती है। किसी भी आवेदन या निर्णय से पहले पाठकों को संबंधित आधिकारिक वेबसाइट पर जानकारी जरूर सत्यापित करनी चाहिए।</p>`,
     },
     contact: {
-      title: 'Contact Us - Hindiline',
-      description: 'Hindiline team se contact karne ke liye email aur website details dekhein.',
-      heading: 'Contact Us',
-      body: `<p>Hindiline se contact karne ke liye aap hume email kar sakte hain.</p>
-      <p><strong>Email:</strong> <a href="mailto:samoondigital@gmail.com">samoondigital@gmail.com</a></p>`,
+      title: 'संपर्क करें - हिंदीलाइन',
+      description: 'हिंदीलाइन टीम से संपर्क करने के लिए ईमेल, कंपनी और पते की जानकारी देखें।',
+      heading: 'संपर्क करें',
+      body: `<p>समाचार, सुधार, सुझाव, विज्ञापन या किसी अन्य जरूरी जानकारी के लिए आप हिंदीलाइन टीम से ईमेल के माध्यम से संपर्क कर सकते हैं।</p>
+      <p><strong>ईमेल:</strong> <a href="mailto:samoondital@gmail.com">samoondital@gmail.com</a></p>
+      <p><strong>कंपनी:</strong> Samoon Digital Private Limited</p>
+      <p><strong>पता:</strong> Vill Gadaniya Post Trikoliya Palia Kalan Kheri Uttar Pradesh 262902</p>
+      <p>हम आमतौर पर जरूरी संदेशों का जवाब उपलब्धता और प्राथमिकता के आधार पर देते हैं। कृपया ईमेल में विषय स्पष्ट लिखें, ताकि आपकी बात सही टीम तक जल्दी पहुंच सके।</p>`,
     },
     privacy: {
-      title: 'Privacy Policy - Hindiline',
-      description: 'Hindiline privacy policy: analytics, cookies, user data aur contact information ka use kaise hota hai.',
-      heading: 'Privacy Policy',
-      body: `<p>Hindiline par hum website performance, user experience aur content improvement ke liye basic analytics data use kar sakte hain.</p>
-      <p>Hum personal information tabhi receive karte hain jab user khud contact form, email ya kisi direct communication ke through share kare. Is data ka use sirf communication aur website improvement ke liye hota hai.</p>
-      <p>Third-party services jaise Google Analytics cookies ya similar technologies ka use traffic insights ke liye kar sakte hain. Users apne browser settings se cookies control kar sakte hain.</p>`,
+      title: 'गोपनीयता नीति - हिंदीलाइन',
+      description: 'हिंदीलाइन गोपनीयता नीति: डेटा, कुकीज, एनालिटिक्स, संपर्क जानकारी और तृतीय-पक्ष सेवाओं के उपयोग की जानकारी।',
+      heading: 'गोपनीयता नीति',
+      body: `<p>हिंदीलाइन पर पाठकों की गोपनीयता हमारे लिए महत्वपूर्ण है। यह नीति बताती है कि वेबसाइट उपयोग के दौरान कौन-सी सामान्य जानकारी प्राप्त हो सकती है और उसका उपयोग कैसे किया जाता है।</p>
+      <p>हम वेबसाइट प्रदर्शन, सुरक्षा, पाठक अनुभव और सामग्री सुधार के लिए सामान्य एनालिटिक्स डेटा जैसे पेज व्यू, डिवाइस प्रकार, ब्राउजर, अनुमानित लोकेशन और रेफरल जानकारी का उपयोग कर सकते हैं।</p>
+      <p>व्यक्तिगत जानकारी हमें तभी मिलती है जब पाठक स्वयं ईमेल या किसी सीधे संपर्क माध्यम से जानकारी साझा करते हैं। ऐसी जानकारी का उपयोग केवल संवाद, सुधार, शिकायत समाधान या वैध व्यावसायिक उद्देश्य के लिए किया जाता है।</p>
+      <p>वेबसाइट पर Google Analytics, विज्ञापन नेटवर्क या अन्य तृतीय-पक्ष सेवाएं कुकीज या समान तकनीक का उपयोग कर सकती हैं। पाठक अपने ब्राउजर सेटिंग्स से कुकीज नियंत्रित या बंद कर सकते हैं।</p>
+      <p>हिंदीलाइन बाहरी वेबसाइटों के लिंक दे सकता है। उन वेबसाइटों की सामग्री, सुरक्षा और गोपनीयता नीतियों के लिए संबंधित वेबसाइट स्वयं जिम्मेदार होती है।</p>
+      <p>इस नीति में समय-समय पर बदलाव हो सकते हैं। अपडेट होने पर नई नीति इसी पेज पर उपलब्ध कराई जाएगी।</p>`,
     },
   }[kind];
 
   return publicShell(
     pages.title,
     pages.description,
-    `<main class="article"><div class="wrap"><div class="article-head"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(pages.heading)}</span></nav><h1>${escapeHtml(pages.heading)}</h1></div><div class="content">${pages.body}</div></div></main>`,
+    `<section class="article"><div class="wrap"><div class="article-head"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(pages.heading)}</span></nav><h1>${escapeHtml(pages.heading)}</h1></div><div class="content">${pages.body}</div></div></section>`,
     '',
     { categories },
   );
@@ -3004,6 +3194,64 @@ function articleCardsList(articles: PublicArticleRow[]) {
       .map((article, index) => renderPublicPostCard(article, { eager: index < 2 }))
       .join('')}</div></section>`
     : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
+}
+
+function publicArticlesPage(articles: PublicArticleRow[], categories: CategoryRow[], hasMore: boolean) {
+  const title = 'सभी लेख - हिंदीलाइन';
+  const description = 'हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं से जुड़े सभी ताजा लेख पढ़ें।';
+  const cards = articles.length
+    ? articles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')
+    : '';
+  const content = `<section class="hero">
+    <div class="wrap">
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>सभी लेख</span></nav>
+      <h1>सभी लेख</h1>
+      <p>हिंदीलाइन पर प्रकाशित ताजा अपडेट, भर्ती, एडमिट कार्ड, रिजल्ट और उपयोगी सरकारी जानकारी एक जगह पढ़ें।</p>
+    </div>
+  </section>
+  <section class="wrap post-grid-section">
+    <div class="grid" data-articles-grid>${cards}</div>
+    ${articles.length ? `<div class="load-sentinel" data-articles-sentinel data-page="2" data-has-more="${hasMore ? '1' : '0'}"><span class="load-status">${hasMore ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।'}</span></div>` : '<div class="empty">अभी कोई published article नहीं है।</div>'}
+  </section>
+  <script>
+    (() => {
+      const grid = document.querySelector('[data-articles-grid]');
+      const sentinel = document.querySelector('[data-articles-sentinel]');
+      if (!grid || !sentinel || sentinel.dataset.hasMore !== '1') return;
+      let loading = false;
+      const loadMore = async () => {
+        if (loading || sentinel.dataset.hasMore !== '1') return;
+        loading = true;
+        try {
+          const page = Number(sentinel.dataset.page || '2');
+          const response = await fetch('/articles-feed?page=' + page, { headers: { Accept: 'application/json' } });
+          if (!response.ok) throw new Error('Request failed');
+          const data = await response.json();
+          if (data.html) grid.insertAdjacentHTML('beforeend', data.html);
+          sentinel.dataset.page = String(page + 1);
+          sentinel.dataset.hasMore = data.hasMore ? '1' : '0';
+          sentinel.querySelector('.load-status').textContent = data.hasMore ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।';
+        } catch {
+          sentinel.dataset.hasMore = '0';
+          sentinel.querySelector('.load-status').textContent = 'लेख लोड नहीं हो पाए। कृपया पेज रीफ्रेश करें।';
+        } finally {
+          loading = false;
+        }
+      };
+      const observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMore();
+      }, { rootMargin: '360px 0px' });
+      observer.observe(sentinel);
+    })();
+  </script>`;
+
+  return publicShell(
+    title,
+    description,
+    content,
+    `<link rel="canonical" href="${escapeHtml(`${PUBLIC_SITE_ORIGIN}/articles`)}" />`,
+    { categories },
+  );
 }
 
 function publicSearchPage(query: string, articles: PublicArticleRow[], categories: CategoryRow[]) {
@@ -3154,6 +3402,7 @@ function buildSitemapXml(articles: SitemapArticleRow[], categories: CategoryRow[
       ...categories.map((category) => category.updated_at || category.created_at),
       ...authors.map((author) => author.updated_at || author.created_at),
     ])),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/articles`, maxSitemapDate(articles.map((article) => article.updated_at || article.created_at))),
     ...categories.map((category) => sitemapUrlEntry(
       publicCategoryUrl(category.slug),
       maxSitemapDate([category.updated_at, category.created_at, categoryLastmod.get(category.name)]),
@@ -3204,6 +3453,7 @@ function buildPageSitemapXml(articles: SitemapArticleRow[], categories: Category
   ]);
   const entries = [
     sitemapUrlEntry(PUBLIC_SITE_ORIGIN, lastmod),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/articles`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/about-us`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/contact-us`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/privacy-policy`, lastmod),
@@ -3251,13 +3501,97 @@ ${entries.join('\n')}
 }
 
 function buildRobotsTxt() {
-  return `User-agent: *
+  const explicitlyAllowedBots = ['Googlebot', 'Googlebot-News', 'Bingbot', 'BingPreview', 'DuckDuckBot', 'Applebot', 'ChatGPT-User', 'OAI-SearchBot', 'Claude-SearchBot', 'Claude-User', 'PerplexityBot', 'Perplexity-User'];
+  const trainingBots = ['GPTBot', 'Google-Extended', 'CCBot', 'ClaudeBot', 'Bytespider', 'Amazonbot', 'Applebot-Extended', 'meta-externalagent', 'anthropic-ai'];
+  return `# Hindiline public robots policy
+# Search engines and AI search/recommendation crawlers are welcome.
+# AI training crawlers are reserved from using this content for model training.
+# Admin/private surfaces are on admin.hindiline.com and disallowed separately.
+
+User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=no
 Allow: /
+
+${explicitlyAllowedBots.map((bot) => `User-agent: ${bot}\nAllow: /`).join('\n\n')}
+
+${trainingBots.map((bot) => `User-agent: ${bot}\nDisallow: /`).join('\n\n')}
 
 Sitemap: ${PUBLIC_SITE_ORIGIN}/sitemap.xml
 Sitemap: ${PUBLIC_SITE_ORIGIN}/sitemap-index.xml
 Sitemap: ${PUBLIC_SITE_ORIGIN}/news-sitemap.xml
 `;
+}
+
+function buildAdminRobotsTxt() {
+  return `# Hindiline admin is private and must not be indexed.
+User-agent: *
+Disallow: /
+`;
+}
+
+function setAdminSecurityHeaders(c: Context<{ Bindings: Bindings }>) {
+  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
+  c.header('Cache-Control', 'no-store, max-age=0, must-revalidate');
+  c.header('Pragma', 'no-cache');
+  c.header('Expires', '0');
+  c.header('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Referrer-Policy', 'same-origin');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  c.header(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "img-src 'self' data: blob: https://hindiline.com https://www.hindiline.com",
+      "media-src 'self' https://hindiline.com https://www.hindiline.com",
+      "connect-src 'self' https://admin.hindiline.com https://hindiline.com",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+    ].join('; '),
+  );
+}
+
+function setPublicSecurityHeaders(c: Context<{ Bindings: Bindings }>) {
+  c.header('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'SAMEORIGIN');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+}
+
+function isPublicPageCacheable(c: Context<{ Bindings: Bindings }>, url: URL) {
+  if (c.req.method !== 'GET') return false;
+  if (url.search) return false;
+  if (url.pathname === '/search' || url.pathname === '/articles-feed') return false;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/assets/')) return false;
+  if (url.pathname === '/robots.txt') return false;
+  return true;
+}
+
+function publicPageCacheKey(url: URL) {
+  const key = new URL(url.toString());
+  key.search = '';
+  return new Request(key.toString(), { method: 'GET' });
+}
+
+function publicPageCache() {
+  return (caches as unknown as { default: Cache }).default;
+}
+
+async function readPublicPageCache(c: Context<{ Bindings: Bindings }>, url: URL) {
+  if (!isPublicPageCacheable(c, url)) return null;
+  return publicPageCache().match(publicPageCacheKey(url));
+}
+
+function cachePublicPage(c: Context<{ Bindings: Bindings }>, url: URL, response: Response) {
+  if (response.status !== 200 || !isPublicPageCacheable(c, url)) return response;
+  c.executionCtx.waitUntil(publicPageCache().put(publicPageCacheKey(url), response.clone()));
+  return response;
 }
 
 function xmlResponse(xml: string) {
@@ -3278,7 +3612,7 @@ function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categ
   return publicShell(
     title,
     description,
-    `<main class="wrap profile">
+    `<section class="wrap profile">
       <header class="profile-head">
         ${image}
         <div>
@@ -3287,7 +3621,7 @@ function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categ
           <p>${escapeHtml(description)}</p>
         </div>
       </header>
-    </main>${articleCardsList(articles)}`,
+    </section>${articleCardsList(articles)}`,
     `<link rel="canonical" href="${escapeHtml(publicAuthorUrl(author.slug))}" />
   ${jsonLdScript(personJsonLd(author))}
   ${jsonLdScript({
@@ -3330,7 +3664,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
   return publicShell(
     article.seo_title || article.title,
     article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
-    `${previewBanner}<main class="wrap article${isTargetedPage ? ' targeted-article-page' : ''}">
+    `${previewBanner}<section class="wrap article${isTargetedPage ? ' targeted-article-page' : ''}">
       <header class="article-head">
         <nav class="breadcrumbs" aria-label="Breadcrumb">
           ${breadcrumbTrail}
@@ -3355,7 +3689,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
       </section>
       ${shareButtons}
       <article class="content${isTargetedPage ? ' targeted-content' : ''}">${article.content}</article>
-    </main>`,
+    </section>`,
     articleHeadExtras(article, preview, categorySlug),
     { categories, activeCategorySlug: categorySlug },
   );
@@ -3364,6 +3698,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
 async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   const url = new URL(c.req.url);
   const sitemapPath = url.pathname.toLowerCase();
+  setPublicSecurityHeaders(c);
 
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     return c.text('Not found', 404);
@@ -3426,26 +3761,48 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     return xmlResponse(buildNewsSitemapXml(articles));
   }
 
-  c.header('Cache-Control', 'no-store, max-age=0, must-revalidate');
+  c.header('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=86400');
+
+  const cachedPage = await readPublicPageCache(c, url);
+  if (cachedPage) {
+    return cachedPage;
+  }
 
   if (url.pathname === '/' || url.pathname === '') {
     const articles = await readPublishedArticles(c.env.ADMIN_DB);
     const categories = await readCategories(c.env.ADMIN_DB);
-    return c.html(publicHomePage(articles, categories));
+    return cachePublicPage(c, url, c.html(publicHomePage(articles, categories)));
   }
 
   const categories = await readCategories(c.env.ADMIN_DB);
 
   if (url.pathname === '/about-us' || url.pathname === '/about') {
-    return c.html(publicInfoPage('about', categories));
+    return cachePublicPage(c, url, c.html(publicInfoPage('about', categories)));
   }
 
   if (url.pathname === '/contact-us' || url.pathname === '/contact') {
-    return c.html(publicInfoPage('contact', categories));
+    return cachePublicPage(c, url, c.html(publicInfoPage('contact', categories)));
   }
 
   if (url.pathname === '/privacy-policy' || url.pathname === '/privacy') {
-    return c.html(publicInfoPage('privacy', categories));
+    return cachePublicPage(c, url, c.html(publicInfoPage('privacy', categories)));
+  }
+
+  if (url.pathname === '/articles') {
+    const rows = await readPublishedArticlesPage(c.env.ADMIN_DB, 1, 12);
+    const hasMore = rows.length > 12;
+    return cachePublicPage(c, url, c.html(publicArticlesPage(rows.slice(0, 12), categories, hasMore)));
+  }
+
+  if (url.pathname === '/articles-feed') {
+    const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
+    const rows = await readPublishedArticlesPage(c.env.ADMIN_DB, page, 12);
+    const hasMore = rows.length > 12;
+    const html = rows
+      .slice(0, 12)
+      .map((article) => renderPublicPostCard(article, { compactMeta: true }))
+      .join('');
+    return c.json({ html, hasMore });
   }
 
   if (url.pathname === '/search') {
@@ -3461,10 +3818,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const category = await readCategoryBySlug(c.env.ADMIN_DB, categorySlug);
     if (!category) {
-      return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<main class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</main>', '', { categories }), 404);
+      return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<section class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</section>', '', { categories }), 404);
     }
     const articles = await readPublishedArticlesByCategory(c.env.ADMIN_DB, category.name);
-    return c.html(publicCategoryPage(category, articles, categories));
+    return cachePublicPage(c, url, c.html(publicCategoryPage(category, articles, categories)));
   }
 
   if (url.pathname.startsWith('/author/')) {
@@ -3474,10 +3831,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     }
     const author = await readAuthorBySlug(c.env.ADMIN_DB, authorSlug);
     if (!author) {
-      return c.html(publicShell('Author not found - Hindiline', 'The requested author could not be found.', '<main class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</main>', '', { categories }), 404);
+      return c.html(publicShell('Author not found - Hindiline', 'The requested author could not be found.', '<section class="wrap empty">Author profile nahi mila. <a href="/">Latest blogs</a> dekhein.</section>', '', { categories }), 404);
     }
     const articles = await readPublishedArticlesByAuthor(c.env.ADMIN_DB, author.id);
-    return c.html(publicAuthorPage(author, articles, categories));
+    return cachePublicPage(c, url, c.html(publicAuthorPage(author, articles, categories)));
   }
 
   const slug = decodeURIComponent(url.pathname.replace(/^\/+|\/+$/g, ''));
@@ -3491,7 +3848,7 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
       publicShell(
         'Article not found - Hindiline',
         'The requested article could not be found.',
-        '<main class="wrap empty">Article nahi mila. <a href="/">Latest blogs</a> dekhein.</main>',
+        '<section class="wrap empty">Article nahi mila. <a href="/">Latest blogs</a> dekhein.</section>',
         '',
         { categories },
       ),
@@ -3500,7 +3857,7 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   }
 
   const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
-  return c.html(publicArticlePage(article, { categorySlug: category?.slug || null, categories }));
+  return cachePublicPage(c, url, c.html(publicArticlePage(article, { categorySlug: category?.slug || null, categories })));
 }
 
 function loginPage(error = '') {
@@ -3509,6 +3866,7 @@ function loginPage(error = '') {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow,noarchive,nosnippet" />
   <title>Samoon Digital — Admin</title>
   <style>${shellStyles()}</style>
 </head>
@@ -4922,13 +5280,26 @@ function placeholderPage(
 
 app.use('*', async (c, next) => {
   const host = (c.req.header('host') || new URL(c.req.url).hostname).split(':')[0].toLowerCase();
+  const url = new URL(c.req.url);
+
+  if (url.protocol === 'http:') {
+    url.protocol = 'https:';
+    return c.redirect(url.toString(), 301);
+  }
 
   if (host === 'hindiline.com' || host === 'www.hindiline.com') {
     return handlePublicSite(c);
   }
 
+  setAdminSecurityHeaders(c);
   await next();
 });
+
+app.get('/robots.txt', (c) => c.text(buildAdminRobotsTxt(), 200, {
+  'Content-Type': 'text/plain; charset=utf-8',
+  'Cache-Control': 'public, max-age=3600',
+  'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet',
+}));
 
 app.get('/', async (c) => {
   const session = await readSession(c);
@@ -4996,7 +5367,7 @@ app.get('/articles/:id/preview', async (c) => {
       publicShell(
         'Preview not found - Samoon Digital',
         'The requested draft preview could not be found.',
-        '<main class="wrap empty">Draft preview nahi mila. <a href="/articles">Articles</a> par wapas jayen.</main>',
+        '<section class="wrap empty">Draft preview nahi mila. <a href="/articles">Articles</a> par wapas jayen.</section>',
         '<meta name="robots" content="noindex,nofollow" />',
         { categories },
       ),
