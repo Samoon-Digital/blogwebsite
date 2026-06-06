@@ -6,7 +6,10 @@ import { initOpenAIClient, getOpenAIClient, type GeneratedBlogContent, type Gene
 type Bindings = {
   ADMIN_DB: D1Database;
   ARTICLE_IMAGES?: R2Bucket;
+  NOTIFICATION_QUEUE?: QueueBinding;
   SESSION_SECRET: string;
+  ONESIGNAL_APP_ID?: string;
+  ONESIGNAL_REST_API_KEY?: string;
   OPENAI_API_KEY: string;
   OPENAI_TRACKING_ID?: string;
   OPENAI_TEXT_MODEL?: string;
@@ -53,6 +56,77 @@ type ArticleRow = {
   author_job_title?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+interface QueueBinding {
+  send(message: unknown, options?: { delaySeconds?: number }): Promise<void>;
+}
+
+interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+  props: Record<string, unknown>;
+}
+
+interface WorkerQueueMessage<T> {
+  body: T;
+  attempts: number;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+
+interface WorkerMessageBatch<T> {
+  messages: WorkerQueueMessage<T>[];
+}
+
+type NotificationSettingsRow = {
+  id: string;
+  auto_send_enabled: number | string;
+  max_auto_per_24h: number | string;
+  quiet_start_hour: number | string;
+  quiet_end_hour: number | string;
+  timezone: string;
+  updated_at: string;
+};
+
+type NotificationCampaignRow = {
+  id: string;
+  article_id: string | null;
+  source: string;
+  audience_type: string;
+  audience_value: string | null;
+  title: string;
+  body: string;
+  image_url: string | null;
+  target_url: string;
+  status: string;
+  scheduled_at: string | null;
+  onesignal_notification_id: string | null;
+  idempotency_key: string;
+  last_error: string | null;
+  successful_count: number | string;
+  failed_count: number | string;
+  errored_count: number | string;
+  clicked_count: number | string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  sent_at: string | null;
+};
+
+type NotificationTestDeviceRow = {
+  id: string;
+  label: string;
+  subscription_id: string;
+  user_agent: string | null;
+  opted_in: number | string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type NotificationQueueMessage = {
+  campaignId: string;
 };
 
 type PublicArticleRow = {
@@ -179,6 +253,7 @@ type DashboardMetrics = {
 
 interface D1Database {
   prepare(query: string): D1PreparedStatement;
+  batch(statements: D1PreparedStatement[]): Promise<unknown[]>;
 }
 
 interface D1PreparedStatement {
@@ -214,6 +289,10 @@ const PUBLIC_LOGO_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-32
 const PUBLIC_LOGO_AVIF_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-logo-320.avif`;
 const PUBLIC_FAVICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-64.png`;
 const PUBLIC_APPLE_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
+const PUBLIC_NOTIFICATION_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
+const ONESIGNAL_SERVICE_WORKER = 'importScripts("https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js");\n';
+const NOTIFICATION_TEST_TOKEN_TTL_MS = 1000 * 60 * 60;
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const PUBLIC_SITE_NAME = 'Hindiline';
 const PUBLIC_SITE_NAME_HI = 'हिंदीलाइन';
 const PUBLIC_PUBLISHER_NAME = 'Samoon Digital Private Limited';
@@ -222,6 +301,7 @@ const HOMEPAGE_META_DESCRIPTION = 'हिंदीलाइन पर सरक�
 const HOMEPAGE_SCHEMA_DESCRIPTION = 'हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, परीक्षा अपडेट और सरकारी विभागों से जुड़ी महत्वपूर्ण जानकारी सबसे पहले पढ़ें।';
 const JOBS_CATEGORY_SEO_TITLE = 'सरकारी नौकरी 2026 - नई भर्ती, सरकारी वैकेंसी और जॉब अपडेट';
 const JOBS_CATEGORY_SEO_DESCRIPTION = 'केंद्र और राज्य सरकार की नई भर्तियां, रेलवे, SSC, बैंक, पुलिस, शिक्षक और अन्य सरकारी नौकरी की ताजा जानकारी यहां पढ़ें।';
+const RAILWAY_CATEGORY_DESCRIPTION = 'रेलवे की हर नौकरी को गहराई से समझें — पद, कार्य, सैलरी, प्रमोशन और करियर पथ की पूरी जानकारी।';
 
 function publicArticleUrl(slug: string) {
   return `${PUBLIC_SITE_ORIGIN}/${encodeURIComponent(slug)}`;
@@ -1271,6 +1351,18 @@ function formatDateLabel(value: string) {
   }
 }
 
+function formatCardDateLabel(value: string) {
+  try {
+    return new Intl.DateTimeFormat('en-IN', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
 async function sha256Hex(value: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(value);
@@ -1314,6 +1406,345 @@ async function requireSession(c: Context<{ Bindings: Bindings }>) {
 async function queryAll<T>(statement: D1PreparedStatement) {
   const result = await statement.all<T>();
   return result?.results ?? [];
+}
+
+function truncateNotificationText(value: string, maxLength: number) {
+  const text = normalizeText(stripHtml(value)).replace(/\s+/g, ' ');
+  if (text.length <= maxLength) return text;
+  const candidate = text.slice(0, maxLength + 1);
+  const boundary = candidate.lastIndexOf(' ');
+  return `${candidate.slice(0, boundary > maxLength * 0.6 ? boundary : maxLength).trim()}…`;
+}
+
+function notificationPayloadFromArticle(article: Pick<ArticleRow, 'title' | 'slug' | 'excerpt' | 'seo_description' | 'featured_image_url' | 'canonical_url'>) {
+  return {
+    title: truncateNotificationText(article.title, 80),
+    body: truncateNotificationText(article.excerpt || article.seo_description || 'हिंदीलाइन पर पूरी जानकारी पढ़ें।', 120),
+    imageUrl: article.featured_image_url ? optimizedImageUrl(article.featured_image_url, 720, 70) : null,
+    targetUrl: article.canonical_url || publicArticleUrl(article.slug),
+  };
+}
+
+async function readNotificationSettings(db: D1Database) {
+  const settings = await db
+    .prepare('SELECT * FROM notification_settings WHERE id = ? LIMIT 1')
+    .bind('default')
+    .first<NotificationSettingsRow>();
+  return settings || {
+    id: 'default',
+    auto_send_enabled: 0,
+    max_auto_per_24h: 2,
+    quiet_start_hour: 21,
+    quiet_end_hour: 8,
+    timezone: 'Asia/Kolkata',
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function nextAllowedNotificationTime(now = new Date(), quietStartHour = 21, quietEndHour = 8) {
+  const local = new Date(now.getTime() + IST_OFFSET_MS);
+  const hour = local.getUTCHours();
+  if (hour >= quietEndHour && hour < quietStartHour) return null;
+  const target = new Date(local);
+  if (hour >= quietStartHour) {
+    target.setUTCDate(target.getUTCDate() + 1);
+  }
+  target.setUTCHours(quietEndHour, 5, 0, 0);
+  return new Date(target.getTime() - IST_OFFSET_MS);
+}
+
+async function countRecentAutomaticCampaigns(db: D1Database) {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS total
+       FROM notification_campaigns
+       WHERE source = 'auto'
+         AND status IN ('scheduled', 'queued', 'sending', 'sent')
+         AND datetime(COALESCE(sent_at, scheduled_at, created_at)) >= datetime('now', '-24 hours')`,
+    )
+    .first<{ total: number | string }>();
+  return Number(row?.total || 0);
+}
+
+async function enqueueNotificationCampaign(env: Bindings, campaignId: string) {
+  if (!env.NOTIFICATION_QUEUE) {
+    throw new Error('Notification Queue binding is not configured');
+  }
+  await env.NOTIFICATION_QUEUE.send({ campaignId } satisfies NotificationQueueMessage);
+}
+
+async function createAutomaticNotificationCampaign(env: Bindings, article: ArticleRow, createdBy: string) {
+  const existing = await env.ADMIN_DB
+    .prepare("SELECT id FROM notification_campaigns WHERE article_id = ? AND source = 'auto' LIMIT 1")
+    .bind(article.id)
+    .first<{ id: string }>();
+  if (existing) return existing.id;
+
+  const settings = await readNotificationSettings(env.ADMIN_DB);
+  const payload = notificationPayloadFromArticle(article);
+  const campaignId = crypto.randomUUID();
+  const now = new Date();
+  const quietTime = nextAllowedNotificationTime(
+    now,
+    Number(settings.quiet_start_hour),
+    Number(settings.quiet_end_hour),
+  );
+  const recentAutoCount = await countRecentAutomaticCampaigns(env.ADMIN_DB);
+  const canAutoSend = Boolean(Number(settings.auto_send_enabled))
+    && recentAutoCount < Number(settings.max_auto_per_24h)
+    && Boolean(env.ONESIGNAL_REST_API_KEY)
+    && Boolean(env.NOTIFICATION_QUEUE);
+  const status = canAutoSend ? (quietTime ? 'scheduled' : 'queued') : 'ready';
+  const scheduledAt = canAutoSend && quietTime ? quietTime.toISOString() : null;
+
+  await env.ADMIN_DB
+    .prepare(
+      `INSERT OR IGNORE INTO notification_campaigns (
+        id, article_id, source, audience_type, audience_value, title, body, image_url,
+        target_url, status, scheduled_at, idempotency_key, created_by, created_at, updated_at
+      ) VALUES (?, ?, 'auto', 'all', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      campaignId,
+      article.id,
+      payload.title,
+      payload.body,
+      payload.imageUrl,
+      payload.targetUrl,
+      status,
+      scheduledAt,
+      crypto.randomUUID(),
+      createdBy,
+      now.toISOString(),
+      now.toISOString(),
+    )
+    .run();
+
+  if (status === 'queued') {
+    try {
+      await enqueueNotificationCampaign(env, campaignId);
+    } catch (error) {
+      await env.ADMIN_DB
+        .prepare("UPDATE notification_campaigns SET status = 'ready', last_error = ?, updated_at = ? WHERE id = ?")
+        .bind(error instanceof Error ? error.message : 'Queue enqueue failed', new Date().toISOString(), campaignId)
+        .run();
+    }
+  }
+  return campaignId;
+}
+
+function encodeBase64Url(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function encodeBytesBase64Url(bytes: Uint8Array) {
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='));
+  return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+}
+
+async function notificationTokenSignature(secret: string, payload: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  return encodeBytesBase64Url(new Uint8Array(signature));
+}
+
+async function createNotificationTestToken(secret: string) {
+  const payload = encodeBase64Url(JSON.stringify({
+    exp: Date.now() + NOTIFICATION_TEST_TOKEN_TTL_MS,
+    nonce: crypto.randomUUID(),
+  }));
+  return `${payload}.${await notificationTokenSignature(secret, payload)}`;
+}
+
+async function verifyNotificationTestToken(secret: string, token: string) {
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) return false;
+  const expected = await notificationTokenSignature(secret, payload);
+  if (signature !== expected) return false;
+  try {
+    const parsed = JSON.parse(decodeBase64Url(payload)) as { exp?: number };
+    return Boolean(parsed.exp && parsed.exp > Date.now());
+  } catch {
+    return false;
+  }
+}
+
+async function sendOneSignalCampaign(env: Bindings, campaign: NotificationCampaignRow) {
+  if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_REST_API_KEY) {
+    throw new Error('OneSignal App ID or REST API key is not configured');
+  }
+
+  const requestBody: Record<string, unknown> = {
+    app_id: env.ONESIGNAL_APP_ID,
+    target_channel: 'push',
+    headings: { en: campaign.title },
+    contents: { en: campaign.body },
+    name: `Hindiline ${campaign.source}: ${campaign.title}`.slice(0, 128),
+    url: campaign.target_url,
+    web_url: campaign.target_url,
+    chrome_web_icon: PUBLIC_NOTIFICATION_ICON_URL,
+    idempotency_key: campaign.idempotency_key,
+    custom_data: { campaign_id: campaign.id, article_id: campaign.article_id },
+  };
+  if (campaign.image_url) {
+    requestBody.chrome_web_image = campaign.image_url;
+    requestBody.big_picture = campaign.image_url;
+  }
+  if (campaign.audience_type === 'test') {
+    if (!campaign.audience_value) throw new Error('Test device subscription is missing');
+    requestBody.include_subscription_ids = [campaign.audience_value];
+  } else if (campaign.audience_type === 'category') {
+    if (!campaign.audience_value) throw new Error('Category audience is missing');
+    requestBody.filters = [{
+      field: 'tag',
+      key: campaign.audience_value,
+      relation: '=',
+      value: '1',
+    }];
+  } else {
+    requestBody.included_segments = ['Subscribed Users'];
+  }
+
+  const response = await fetch('https://api.onesignal.com/notifications?c=push', {
+    method: 'POST',
+    headers: {
+      Authorization: `Key ${env.ONESIGNAL_REST_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+  });
+  const responseText = await response.text();
+  let responseData: { id?: string; errors?: unknown } = {};
+  try {
+    responseData = JSON.parse(responseText) as { id?: string; errors?: unknown };
+  } catch {
+    responseData = {};
+  }
+  if (!response.ok || !responseData.id) {
+    throw new Error(`OneSignal ${response.status}: ${responseText.slice(0, 1000)}`);
+  }
+  return { id: responseData.id, status: response.status, responseText };
+}
+
+async function processNotificationCampaign(env: Bindings, campaignId: string, attemptNumber: number) {
+  const campaign = await env.ADMIN_DB
+    .prepare('SELECT * FROM notification_campaigns WHERE id = ? LIMIT 1')
+    .bind(campaignId)
+    .first<NotificationCampaignRow>();
+  if (!campaign || ['sent', 'cancelled'].includes(campaign.status)) return;
+
+  const attemptId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare("UPDATE notification_campaigns SET status = 'sending', last_error = NULL, updated_at = ? WHERE id = ?")
+      .bind(now, campaignId),
+    env.ADMIN_DB.prepare(
+      "INSERT INTO notification_attempts (id, campaign_id, attempt_number, status, created_at) VALUES (?, ?, ?, 'sending', ?)",
+    ).bind(attemptId, campaignId, attemptNumber, now),
+  ]);
+
+  try {
+    const result = await sendOneSignalCampaign(env, campaign);
+    const sentAt = new Date().toISOString();
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare(
+        "UPDATE notification_campaigns SET status = 'sent', onesignal_notification_id = ?, sent_at = ?, updated_at = ? WHERE id = ?",
+      ).bind(result.id, sentAt, sentAt, campaignId),
+      env.ADMIN_DB.prepare(
+        "UPDATE notification_attempts SET status = 'sent', http_status = ?, response_body = ? WHERE id = ?",
+      ).bind(result.status, result.responseText.slice(0, 4000), attemptId),
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Notification send failed';
+    const statusMatch = /^OneSignal (\d{3}):/.exec(message);
+    const statusCode = statusMatch ? Number(statusMatch[1]) : 0;
+    const permanentClientError = statusCode >= 400
+      && statusCode < 500
+      && ![408, 409, 425, 429].includes(statusCode);
+    const finalAttempt = attemptNumber >= 4
+      || permanentClientError
+      || message.includes('not configured')
+      || message.includes('is missing');
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare(
+        "UPDATE notification_campaigns SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
+      ).bind(finalAttempt ? 'failed' : 'queued', message.slice(0, 1000), new Date().toISOString(), campaignId),
+      env.ADMIN_DB.prepare(
+        "UPDATE notification_attempts SET status = 'failed', error_message = ? WHERE id = ?",
+      ).bind(message.slice(0, 2000), attemptId),
+    ]);
+    if (!finalAttempt) throw error;
+  }
+}
+
+async function enqueueDueNotificationCampaigns(env: Bindings) {
+  if (!env.NOTIFICATION_QUEUE) return;
+  const campaigns = await queryAll<{ id: string }>(
+    env.ADMIN_DB.prepare(
+      `SELECT id FROM notification_campaigns
+       WHERE status = 'scheduled' AND datetime(scheduled_at) <= datetime('now')
+       ORDER BY datetime(scheduled_at) ASC LIMIT 20`,
+    ),
+  );
+  for (const campaign of campaigns) {
+    await env.ADMIN_DB
+      .prepare("UPDATE notification_campaigns SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'scheduled'")
+      .bind(new Date().toISOString(), campaign.id)
+      .run();
+    await enqueueNotificationCampaign(env, campaign.id);
+  }
+}
+
+async function refreshOneSignalCampaignStats(env: Bindings, campaign: NotificationCampaignRow) {
+  if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_REST_API_KEY || !campaign.onesignal_notification_id) return;
+  const response = await fetch(
+    `https://api.onesignal.com/notifications/${encodeURIComponent(campaign.onesignal_notification_id)}?app_id=${encodeURIComponent(env.ONESIGNAL_APP_ID)}`,
+    { headers: { Authorization: `Key ${env.ONESIGNAL_REST_API_KEY}` } },
+  );
+  if (!response.ok) throw new Error(`OneSignal stats ${response.status}`);
+  const data = await response.json() as {
+    successful?: number;
+    failed?: number;
+    errored?: number;
+    converted?: number;
+  };
+  await env.ADMIN_DB
+    .prepare(
+      `UPDATE notification_campaigns
+       SET successful_count = ?, failed_count = ?, errored_count = ?, clicked_count = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(
+      data.successful || 0,
+      data.failed || 0,
+      data.errored || 0,
+      data.converted || 0,
+      new Date().toISOString(),
+      campaign.id,
+    )
+    .run();
+  if (campaign.source === 'test' && Number(data.successful || 0) > 0) {
+    await env.ADMIN_DB
+      .prepare('UPDATE notification_settings SET auto_send_enabled = 1, updated_at = ? WHERE id = ?')
+      .bind(new Date().toISOString(), 'default')
+      .run();
+  }
 }
 
 async function uploadFeaturedImage(
@@ -1815,12 +2246,22 @@ async function readPublishedArticlesPage(db: D1Database, page = 1, perPage = 12)
   const safePage = Math.max(1, Math.floor(page));
   const safePerPage = Math.max(4, Math.min(24, Math.floor(perPage)));
   const offset = (safePage - 1) * safePerPage;
+  return readPublishedArticlesBatch(db, offset, safePerPage);
+}
+
+async function readPublishedArticlesBatch(db: D1Database, offset = 0, limit = 6, categoryName = '') {
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const safeLimit = Math.max(1, Math.min(24, Math.floor(limit)));
+  const where = categoryName
+    ? "WHERE articles.status = 'published' AND articles.category = ?"
+    : "WHERE articles.status = 'published'";
+  const values: Array<string | number> = categoryName ? [categoryName] : [];
   return queryAll<PublicArticleRow>(
     db
       .prepare(
-        `SELECT ${articleSelectColumns()} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT ? OFFSET ?`,
+        `SELECT ${articleSelectColumns()} FROM articles LEFT JOIN authors ON authors.id = articles.author_id ${where} ORDER BY datetime(COALESCE(articles.updated_at, articles.created_at)) DESC, articles.rowid DESC LIMIT ? OFFSET ?`,
       )
-      .bind(safePerPage + 1, offset),
+      .bind(...values, safeLimit + 1, safeOffset),
   );
 }
 
@@ -1872,16 +2313,6 @@ async function readCategoryByName(db: D1Database, name: string) {
     .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE name = ? LIMIT 1')
     .bind(name)
     .first<CategoryRow>();
-}
-
-async function readPublishedArticlesByCategory(db: D1Database, categoryName: string) {
-  return queryAll<PublicArticleRow>(
-    db
-      .prepare(
-        `SELECT ${articleSelectColumns("''")} FROM articles LEFT JOIN authors ON authors.id = articles.author_id WHERE articles.status = 'published' AND articles.category = ? ORDER BY datetime(articles.updated_at) DESC, articles.rowid DESC LIMIT 24`,
-      )
-      .bind(categoryName),
-  );
 }
 
 async function readAuthorBySlug(db: D1Database, slug: string) {
@@ -2187,21 +2618,36 @@ function publicStyles() {
     .mobile-site-menu-panel a:hover { background: #f4f7fb; color: var(--red); }
     .header-ad-slot { display: none; }
     .header-search { margin-left: auto; width: 38px; height: 38px; border: 0; border-radius: 11px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 8px 18px rgba(9, 36, 71, 0.18); }
-    .header-search svg, .mobile-site-menu svg, .nav-icon svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .notification-bell { width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 11px; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; position: relative; }
+    .notification-bell.is-subscribed::after { content: ""; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: #19a55a; border: 2px solid #fff; }
+    .header-search svg, .notification-bell svg, .mobile-site-menu svg, .nav-icon svg, .nav-more svg, .ticker-arrow svg, .slide-arrow svg, .hero-btn svg, .section-link svg, .article-card-meta svg, .targeted-article svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .push-panel { position: fixed; right: 18px; bottom: 18px; z-index: 60; width: min(390px, calc(100vw - 28px)); padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: #fff; box-shadow: 0 24px 60px rgba(8, 28, 55, 0.22); display: grid; gap: 12px; }
+    .push-panel[hidden] { display: none; }
+    .push-panel h2 { font-size: 1.08rem; line-height: 1.35; }
+    .push-panel p { color: var(--muted); line-height: 1.6; font-size: 0.9rem; }
+    .push-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .push-action { min-height: 38px; padding: 0 14px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--ink); font-weight: 800; cursor: pointer; }
+    .push-action.primary { background: var(--red); border-color: var(--red); color: #fff; }
+    .push-preferences { display: grid; gap: 9px; max-height: 260px; overflow-y: auto; padding: 2px; }
+    .push-preference { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.9rem; font-weight: 700; }
+    .push-status { font-size: 0.82rem; color: var(--muted); }
     .section-nav { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; color: var(--ink); }
-    .nav-scroll { display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; padding: 3px 0; }
+    .nav-scroll { display: flex; align-items: center; gap: 5px; overflow: hidden; scrollbar-width: none; scroll-behavior: smooth; padding: 3px 0; }
     .nav-scroll::-webkit-scrollbar { display: none; }
     .top-nav-link { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 10px; border-radius: 999px; font-size: 0.86rem; font-weight: 760; white-space: nowrap; color: #111827; transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
+    .top-nav-link[hidden] { display: none; }
     .top-nav-link:hover { background: #f3f6fb; color: var(--red); }
     .top-nav-link.active, .top-nav-link.home-link.active { background: var(--red); color: #fff; box-shadow: 0 6px 14px rgba(225, 25, 36, 0.18); }
     .top-nav-link.home-link { color: var(--red); }
     .nav-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex: 0 0 auto; }
     .nav-more summary { width: 32px; height: 32px; border: 1px solid #e3e9f2; border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
     .nav-more { position: relative; flex: 0 0 auto; }
+    .nav-more[hidden] { display: none; }
     .nav-more summary { list-style: none; }
     .nav-more summary::-webkit-details-marker { display: none; }
     .nav-more div { position: absolute; right: 0; top: calc(100% + 10px); width: min(280px, 82vw); display: grid; gap: 2px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 22px 44px rgba(16, 24, 40, 0.15); }
-    .nav-more a { padding: 10px 12px; border-radius: 7px; color: var(--ink); font-weight: 700; font-size: 0.92rem; }
+    .nav-more a { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 7px; color: var(--ink); font-weight: 700; font-size: 0.92rem; }
+    .nav-more a[hidden] { display: none; }
     .nav-more a:hover { background: #f4f7fb; color: var(--red); }
     .ticker-strip { background: linear-gradient(90deg, #061b34 0%, #0a2647 62%, #05152a 100%); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); }
     .ticker-inner { min-height: 38px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; }
@@ -2246,7 +2692,7 @@ function publicStyles() {
     .post-card img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--soft); border-bottom: 1px solid var(--border); }
     .post-card-body { padding: 14px 14px 16px; display: grid; gap: 10px; align-content: start; min-height: 100%; }
     .kicker { color: var(--red); font-size: 0.76rem; font-weight: 850; text-transform: uppercase; letter-spacing: 0.04em; }
-    .post-card h2 { font-size: 1.02rem; line-height: 1.48; font-weight: 800; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 3.02em; }
+    .post-card h2 { font-size: 1.02rem; line-height: 1.48; font-weight: 800; overflow-wrap: anywhere; min-height: 0; }
     .post-card p { color: var(--muted); line-height: 1.68; font-size: 0.92rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 4.7em; }
     .date { color: #5f6368; font-size: 0.82rem; }
     .byline a { color: var(--accent); font-weight: 600; }
@@ -2259,6 +2705,8 @@ function publicStyles() {
     .hero { padding: 28px 0 18px; background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 100%); border-bottom: 1px solid var(--border); }
     .hero h1 { font-size: clamp(1.6rem, 1.35rem + 1vw, 2.4rem); line-height: 1.2; letter-spacing: -0.02em; max-width: 820px; }
     .hero p { margin-top: 10px; color: var(--muted); line-height: 1.72; max-width: 720px; font-size: 0.98rem; }
+    .hero.railway-category h1 { font-size: clamp(1.45rem, 1.25rem + 0.65vw, 2rem); line-height: 1.12; }
+    .hero.railway-category p { margin-top: 7px; line-height: 1.58; }
     .article { padding: 26px 0 56px; }
     .article-head { display: grid; gap: 14px; padding-bottom: 18px; max-width: 760px; }
     .article h1 { max-width: 760px; font-size: clamp(1.95rem, 1.6rem + 0.78vw, 2.55rem); line-height: 1.24; letter-spacing: -0.02em; font-weight: 800; overflow-wrap: anywhere; word-break: break-word; }
@@ -2403,13 +2851,16 @@ function publicStyles() {
     .footer-links a:hover { color: var(--red); }
     .load-sentinel { min-height: 48px; display: grid; place-items: center; color: var(--muted); font-weight: 700; }
     .load-status { color: var(--muted); font-size: 0.92rem; }
+    .home-recent-sentinel { min-height: 1px; }
+    .home-recent-link { display: none; width: fit-content; margin: 8px auto 0; }
     @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
     @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
     @media (max-width: 820px) {
-      .header-top-inner { display: grid; grid-template-columns: auto 1fr auto; min-height: 54px; gap: 8px; padding: 5px 0; }
+      .header-top-inner { display: grid; grid-template-columns: auto 1fr auto auto; min-height: 54px; gap: 8px; padding: 5px 0; }
       .mobile-site-menu { grid-column: 1; grid-row: 1; display: inline-flex; }
       .brand-mark { grid-column: 2; grid-row: 1; }
-      .header-search { grid-column: 3; grid-row: 1; margin-left: 0; }
+      .notification-bell { grid-column: 3; grid-row: 1; }
+      .header-search { grid-column: 4; grid-row: 1; margin-left: 0; }
       .section-nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1fr) auto; }
       .brand-logo { height: 38px; }
       .top-nav-link { min-height: 32px; padding: 0 8px; font-size: 0.82rem; }
@@ -2431,6 +2882,8 @@ function publicStyles() {
     @media (max-width: 620px) {
       .wrap { width: min(1240px, calc(100% - 18px)); }
       .header-search { width: 34px; height: 34px; border-radius: 10px; }
+      .notification-bell { width: 34px; height: 34px; border-radius: 10px; }
+      .push-panel { right: 9px; bottom: 9px; width: calc(100vw - 18px); }
       .nav-more div { right: -44px; }
       .hero-actions { gap: 8px; }
       .hero-btn { width: auto; min-height: 38px; padding: 0 14px; }
@@ -2469,6 +2922,12 @@ function publicStyles() {
       .target-step-row > span { width: 38px; height: 38px; }
       .target-faq p { padding-left: 16px; }
     }
+    @media (max-width: 699px) {
+      .post-card.mobile-initial-buffer, .post-card.home-recent-extra { display: none; }
+      .post-card.mobile-initial-buffer.is-visible, .post-card.home-recent-extra.is-visible { display: grid; }
+      .desktop-section-link { display: none; }
+      .home-recent-link.is-visible { display: inline-flex; }
+    }
   `;
 }
 
@@ -2487,6 +2946,7 @@ function renderPublicIcon(name: string) {
     syllabus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a4 4 0 0 1 4 4v12H9a4 4 0 0 0-4-4z"/><path d="M5 4v12"/><path d="M9 8h6"/><path d="M9 12h5"/></svg>',
     answer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19h.01"/><path d="M9.5 9a2.7 2.7 0 1 1 4.2 2.25c-.96.62-1.7 1.18-1.7 2.75"/><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/></svg>',
     current: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/><path d="M8 14h3"/><path d="M13 14h3"/></svg>',
+    railway: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z"/><path d="M4 10h16"/><path d="M8 7h.01"/><path d="M16 7h.01"/><path d="m8 18-2 3"/><path d="m16 18 2 3"/><path d="M8 14h.01"/><path d="M16 14h.01"/></svg>',
     contact: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="m5 7 7 6 7-6"/><path d="M8 17h8"/></svg>',
     search: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 20-4.5-4.5"/><circle cx="11" cy="11" r="6"/></svg>',
     bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 1 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
@@ -2501,6 +2961,7 @@ function renderPublicIcon(name: string) {
 
 function categoryIconName(categoryName: string) {
   const value = categoryName.toLowerCase();
+  if (/railway|रेलवे|रेलगाड़ी|train/i.test(value)) return 'railway';
   if (/admit|card|hall|प्रवेश/i.test(value)) return 'admit';
   if (/result|रिजल्ट/i.test(value)) return 'result';
   if (/syllabus|सिलेबस/i.test(value)) return 'syllabus';
@@ -2523,18 +2984,18 @@ function renderPublicNav(categories: CategoryRow[], options: { activeCategorySlu
   const links = categories
     .map((category) => {
       const activeClass = category.slug === activeCategorySlug ? ' active' : '';
-      return `<a class="top-nav-link${activeClass}" href="/category/${escapeHtml(category.slug)}"><span class="nav-icon">${renderPublicIcon(categoryIconName(category.name))}</span><span>${escapeHtml(category.name)}</span></a>`;
+      return `<a class="top-nav-link${activeClass}" data-nav-category="${escapeHtml(category.slug)}" href="/category/${escapeHtml(category.slug)}"><span class="nav-icon">${renderPublicIcon(categoryIconName(category.name))}</span><span>${escapeHtml(category.name)}</span></a>`;
     })
     .join('');
   const moreLinks = categories
-    .map((category) => `<a href="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</a>`)
+    .map((category) => `<a data-nav-more-category="${escapeHtml(category.slug)}" href="/category/${escapeHtml(category.slug)}"><span class="nav-icon">${renderPublicIcon(categoryIconName(category.name))}</span><span>${escapeHtml(category.name)}</span></a>`)
     .join('');
 
   return `<nav class="section-nav" aria-label="Primary categories">
     <div class="nav-scroll" id="top-nav">
       <a class="top-nav-link home-link${homeClass}" href="/"><span class="nav-icon">${renderPublicIcon('home')}</span><span>होम</span></a>${links}
     </div>
-    ${categories.length ? `<details class="nav-more"><summary aria-label="Open category menu">${renderPublicIcon('menu')}</summary><div>${moreLinks}</div></details>` : ''}
+    ${categories.length ? `<details class="nav-more" hidden><summary aria-label="Open category menu">${renderPublicIcon('menu')}</summary><div>${moreLinks}</div></details>` : ''}
   </nav>`;
 }
 
@@ -2552,6 +3013,10 @@ function renderPublicFooterLinks() {
 }
 
 function publicShell(title: string, description: string, content: string, headExtras = '', options: PublicShellOptions = {}) {
+  const notificationCategories = (options.categories || []).slice(0, 10).map((category) => ({
+    slug: category.slug,
+    name: category.name,
+  }));
   const baseSchemas = [organizationJsonLd(), websiteJsonLd()].map(jsonLdScript).join('\n  ');
   const navMarkup = renderPublicNav(options.categories || [], {
     activeCategorySlug: options.activeCategorySlug,
@@ -2581,6 +3046,8 @@ function publicShell(title: string, description: string, content: string, headEx
   <meta property="og:site_name" content="${escapeHtml(PUBLIC_SITE_NAME)}" />
   <link rel="icon" type="image/png" sizes="64x64" href="${escapeHtml(PUBLIC_FAVICON_URL)}" />
   <link rel="apple-touch-icon" href="${escapeHtml(PUBLIC_APPLE_ICON_URL)}" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   ${analyticsTag}
   ${headExtras}
   ${baseSchemas}
@@ -2598,6 +3065,7 @@ function publicShell(title: string, description: string, content: string, headEx
           </picture>
         </a>
         ${navMarkup}
+        <button class="notification-bell" type="button" data-notification-bell aria-label="सूचनाएं चालू करें" title="सूचनाएं">${renderPublicIcon('bell')}</button>
         <a class="header-search" href="/search" aria-label="Search Hindiline">${renderPublicIcon('search')}</a>
       </div>
     </div>
@@ -2606,14 +3074,28 @@ function publicShell(title: string, description: string, content: string, headEx
     ${content}
   </main>
   <footer class="site-footer"><div class="wrap"><span>Hindiline &copy; ${new Date().getFullYear()}</span><nav class="footer-links" aria-label="Footer links">${renderPublicFooterLinks()}</nav></div></footer>
-  <script>${publicEnhancementScript()}</script>
+  <aside class="push-panel" data-push-panel hidden aria-live="polite">
+    <div>
+      <h2 data-push-title>नई खबरों की सूचना पाएं</h2>
+      <p data-push-copy>महत्वपूर्ण नौकरी, रिजल्ट और शिक्षा अपडेट सीधे अपने ब्राउजर पर पाएं।</p>
+    </div>
+    <div class="push-preferences" data-push-preferences hidden></div>
+    <div class="push-status" data-push-status></div>
+    <div class="push-actions">
+      <button class="push-action primary" type="button" data-push-allow>सूचनाएं चालू करें</button>
+      <button class="push-action" type="button" data-push-save hidden>पसंद सेव करें</button>
+      <button class="push-action" type="button" data-push-dismiss>अभी नहीं</button>
+    </div>
+  </aside>
+  <script>${publicEnhancementScript(notificationCategories)}</script>
 </body>
 </html>`;
 }
 
-function publicEnhancementScript() {
+function publicEnhancementScript(notificationCategories: Array<{ slug: string; name: string }>) {
   return `
     (() => {
+      const notificationCategories = ${escapeJsonForHtml(notificationCategories)};
       const loadAnalytics = () => {
         if (typeof window.__hindilineLoadAnalytics === 'function') window.__hindilineLoadAnalytics();
       };
@@ -2625,6 +3107,192 @@ function publicEnhancementScript() {
         window.requestIdleCallback(loadAnalytics, { timeout: 3500 });
       } else {
         setTimeout(loadAnalytics, 3500);
+      }
+
+      const pushPanel = document.querySelector('[data-push-panel]');
+      const pushBell = document.querySelector('[data-notification-bell]');
+      const pushAllow = document.querySelector('[data-push-allow]');
+      const pushDismiss = document.querySelector('[data-push-dismiss]');
+      const pushSave = document.querySelector('[data-push-save]');
+      const pushPreferences = document.querySelector('[data-push-preferences]');
+      const pushStatus = document.querySelector('[data-push-status]');
+      const pushTitle = document.querySelector('[data-push-title]');
+      const pushCopy = document.querySelector('[data-push-copy]');
+      const pushDismissedUntilKey = 'hindiline_push_dismissed_until';
+      let oneSignal = null;
+
+      const setPushStatus = (message) => {
+        if (pushStatus) pushStatus.textContent = message || '';
+      };
+      const showPushPanel = (preferencesOnly = false) => {
+        if (!pushPanel) return;
+        pushPanel.hidden = false;
+        if (pushTitle) pushTitle.textContent = preferencesOnly ? 'अपनी पसंद चुनें' : 'नई खबरों की सूचना पाएं';
+        if (pushCopy) pushCopy.textContent = preferencesOnly
+          ? 'सभी जरूरी अपडेट मिलेंगे। चाहें तो अधिकतम 2 श्रेणियां प्राथमिकता में चुनें।'
+          : 'महत्वपूर्ण नौकरी, रिजल्ट और शिक्षा अपडेट सीधे अपने ब्राउजर पर पाएं।';
+        if (pushAllow) pushAllow.hidden = preferencesOnly;
+        if (pushSave) pushSave.hidden = !preferencesOnly;
+        if (pushPreferences) pushPreferences.hidden = !preferencesOnly;
+      };
+      const hidePushPanel = () => {
+        if (pushPanel) pushPanel.hidden = true;
+      };
+      const updatePushState = () => {
+        if (!oneSignal || !pushBell) return;
+        const subscribed = Boolean(
+          oneSignal.Notifications.permission
+          && oneSignal.User.PushSubscription.optedIn
+          && oneSignal.User.PushSubscription.id
+        );
+        pushBell.classList.toggle('is-subscribed', subscribed);
+        pushBell.setAttribute('aria-label', subscribed ? 'सूचना पसंद बदलें' : 'सूचनाएं चालू करें');
+        pushBell.title = subscribed ? 'सूचना पसंद बदलें' : 'सूचनाएं चालू करें';
+      };
+      const renderPushPreferences = async () => {
+        if (!oneSignal || !pushPreferences) return;
+        const tags = oneSignal.User.getTags ? oneSignal.User.getTags() : {};
+        pushPreferences.innerHTML = notificationCategories.map((category) => {
+          const checked = tags && tags[category.slug] === '1' ? ' checked' : '';
+          return '<label class="push-preference"><input type="checkbox" value="' + category.slug + '"' + checked + ' /><span>' + category.name + '</span></label>';
+        }).join('');
+        pushPreferences.querySelectorAll('input').forEach((input) => {
+          input.addEventListener('change', () => {
+            const selected = pushPreferences.querySelectorAll('input:checked');
+            if (selected.length > 2) {
+              input.checked = false;
+              setPushStatus('अधिकतम 2 श्रेणियां चुन सकते हैं।');
+            } else {
+              setPushStatus('');
+            }
+          });
+        });
+      };
+      const openPreferencePanel = async () => {
+        await renderPushPreferences();
+        showPushPanel(true);
+      };
+
+      window.OneSignalDeferred = window.OneSignalDeferred || [];
+      window.OneSignalDeferred.push(async function(OneSignal) {
+        oneSignal = OneSignal;
+        try {
+          const configResponse = await fetch('/notification-config.json', { headers: { Accept: 'application/json' } });
+          const config = await configResponse.json();
+          if (!config.appId) throw new Error('Notification app is not configured');
+          await OneSignal.init({
+            appId: config.appId,
+            serviceWorkerPath: 'OneSignalSDKWorker.js',
+            serviceWorkerParam: { scope: '/' },
+            notifyButton: { enable: false },
+          });
+          updatePushState();
+          OneSignal.User.PushSubscription.addEventListener('change', updatePushState);
+          OneSignal.Notifications.addEventListener('permissionChange', updatePushState);
+        } catch (error) {
+          if (pushBell) pushBell.hidden = true;
+          setPushStatus('इस ब्राउजर में सूचनाएं उपलब्ध नहीं हैं।');
+        }
+      });
+      window.__hindilineRegisterTestDevice = async (token, label) => {
+        if (!oneSignal) throw new Error('OneSignal अभी लोड हो रहा है।');
+        await oneSignal.Notifications.requestPermission();
+        if (!oneSignal.Notifications.permission) throw new Error('Notification permission नहीं मिली।');
+        await oneSignal.User.PushSubscription.optIn();
+        let subscriptionId = oneSignal.User.PushSubscription.id;
+        for (let attempt = 0; !subscriptionId && attempt < 20; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          subscriptionId = oneSignal.User.PushSubscription.id;
+        }
+        if (!subscriptionId) throw new Error('OneSignal Subscription ID नहीं मिला।');
+        const response = await fetch('/api/public-notifications/test-device', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, label, subscriptionId }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Test device registration failed');
+        updatePushState();
+        return data;
+      };
+
+      if (pushBell) {
+        pushBell.addEventListener('click', async () => {
+          if (!oneSignal) {
+            showPushPanel(false);
+            setPushStatus('सूचना सेवा लोड हो रही है…');
+            return;
+          }
+          if (oneSignal.User.PushSubscription.optedIn && oneSignal.Notifications.permission) {
+            await openPreferencePanel();
+          } else {
+            showPushPanel(false);
+          }
+        });
+      }
+      if (pushAllow) {
+        pushAllow.addEventListener('click', async () => {
+          if (!oneSignal) return setPushStatus('कृपया एक क्षण बाद फिर प्रयास करें।');
+          setPushStatus('ब्राउजर अनुमति की प्रतीक्षा है…');
+          try {
+            await oneSignal.Notifications.requestPermission();
+            if (oneSignal.Notifications.permission) {
+              await oneSignal.User.PushSubscription.optIn();
+              updatePushState();
+              setPushStatus('सूचनाएं चालू हो गई हैं।');
+              await openPreferencePanel();
+            } else {
+              setPushStatus('अनुमति नहीं मिली। ब्राउजर सेटिंग से Notifications allow करें।');
+            }
+          } catch {
+            setPushStatus('सूचनाएं चालू नहीं हो सकीं।');
+          }
+        });
+      }
+      if (pushSave) {
+        pushSave.addEventListener('click', async () => {
+          if (!oneSignal || !pushPreferences) return;
+          const selected = Array.from(pushPreferences.querySelectorAll('input:checked')).map((input) => input.value);
+          if (selected.length > 2) return setPushStatus('अधिकतम 2 श्रेणियां चुनें।');
+          setPushStatus('पसंद सेव हो रही है…');
+          try {
+            const allKeys = notificationCategories.map((category) => category.slug);
+            if (allKeys.length) await oneSignal.User.removeTags(allKeys);
+            if (selected.length) {
+              await oneSignal.User.addTags(Object.fromEntries(selected.map((key) => [key, '1'])));
+            }
+            setPushStatus('पसंद सेव हो गई।');
+            setTimeout(hidePushPanel, 900);
+          } catch {
+            setPushStatus('पसंद सेव नहीं हो सकी।');
+          }
+        });
+      }
+      if (pushDismiss) {
+        pushDismiss.addEventListener('click', () => {
+          localStorage.setItem(pushDismissedUntilKey, String(Date.now() + 3 * 24 * 60 * 60 * 1000));
+          hidePushPanel();
+        });
+      }
+
+      const pageViews = Number(localStorage.getItem('hindiline_page_views') || '0') + 1;
+      localStorage.setItem('hindiline_page_views', String(pageViews));
+      const mayShowSoftPrompt = () => {
+        const dismissedUntil = Number(localStorage.getItem(pushDismissedUntilKey) || '0');
+        if (Date.now() < dismissedUntil || !oneSignal || oneSignal.Notifications.permission) return;
+        showPushPanel(false);
+      };
+      if (pageViews >= 2) setTimeout(mayShowSoftPrompt, 45000);
+      if (document.querySelector('.article')) {
+        let scrollPromptShown = false;
+        window.addEventListener('scroll', () => {
+          if (scrollPromptShown) return;
+          const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+          if (scrollable > 0 && window.scrollY / scrollable >= 0.5) {
+            scrollPromptShown = true;
+            mayShowSoftPrompt();
+          }
+        }, { passive: true });
       }
 
       const closeOpenMenus = (event) => {
@@ -2642,6 +3310,71 @@ function publicEnhancementScript() {
           if (menu) menu.removeAttribute('open');
         });
       });
+
+      const syncNavOverflow = (nav) => {
+        const navScroll = nav.querySelector('.nav-scroll');
+        const moreMenu = nav.querySelector('.nav-more');
+        if (!navScroll || !moreMenu) return;
+        const categoryLinks = Array.from(navScroll.querySelectorAll('[data-nav-category]'));
+        const moreLinks = new Map(
+          Array.from(moreMenu.querySelectorAll('[data-nav-more-category]'))
+            .map((link) => [link.dataset.navMoreCategory, link]),
+        );
+
+        moreMenu.removeAttribute('open');
+        moreMenu.hidden = true;
+        categoryLinks.forEach((link) => {
+          link.hidden = false;
+          const moreLink = moreLinks.get(link.dataset.navCategory);
+          if (moreLink) moreLink.hidden = true;
+        });
+
+        if (navScroll.scrollWidth <= navScroll.clientWidth + 1) return;
+        moreMenu.hidden = false;
+        for (let index = categoryLinks.length - 1; index >= 0 && navScroll.scrollWidth > navScroll.clientWidth + 1; index -= 1) {
+          const link = categoryLinks[index];
+          link.hidden = true;
+          const moreLink = moreLinks.get(link.dataset.navCategory);
+          if (moreLink) moreLink.hidden = false;
+        }
+      };
+
+      const publicNavs = Array.from(document.querySelectorAll('.section-nav'));
+      let navResizeFrame = 0;
+      const syncAllNavs = () => {
+        cancelAnimationFrame(navResizeFrame);
+        navResizeFrame = requestAnimationFrame(() => publicNavs.forEach(syncNavOverflow));
+      };
+      syncAllNavs();
+      window.addEventListener('resize', syncAllNavs, { passive: true });
+      if ('ResizeObserver' in window) {
+        const navResizeObserver = new ResizeObserver(syncAllNavs);
+        publicNavs.forEach((nav) => navResizeObserver.observe(nav));
+      }
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(syncAllNavs);
+      }
+
+      const homeRecentSentinel = document.querySelector('[data-home-recent-sentinel]');
+      if (homeRecentSentinel) {
+        const revealHomeRecent = () => {
+          document.querySelectorAll('.home-recent-extra').forEach((card) => card.classList.add('is-visible'));
+          const allArticlesLink = document.querySelector('[data-home-recent-link]');
+          if (allArticlesLink) allArticlesLink.classList.add('is-visible');
+          homeRecentSentinel.remove();
+        };
+        if ('IntersectionObserver' in window) {
+          const homeRecentObserver = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+              homeRecentObserver.disconnect();
+              revealHomeRecent();
+            }
+          }, { rootMargin: '240px 0px' });
+          homeRecentObserver.observe(homeRecentSentinel);
+        } else {
+          revealHomeRecent();
+        }
+      }
 
       const ticker = document.querySelector('.ticker-list');
       const tickerItems = ticker ? Array.from(ticker.children) : [];
@@ -3085,29 +3818,39 @@ function homePageJsonLd(articles: PublicArticleRow[]) {
   };
 }
 
-function renderPublicPostCard(article: PublicArticleRow, options: { eager?: boolean; compactMeta?: boolean } = {}) {
+function renderPublicPostCard(
+  article: PublicArticleRow,
+  options: { eager?: boolean; compactMeta?: boolean; minimalListing?: boolean; className?: string } = {},
+) {
   const eager = Boolean(options.eager);
   const compactMeta = Boolean(options.compactMeta);
+  const minimalListing = Boolean(options.minimalListing);
+  const className = normalizeText(options.className);
   const displayContent = getDisplayArticleContent(article) || article.excerpt || article.title;
   article.content = displayContent;
   const image = article.featured_image_url
     ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, eager ? 720 : 540, 70))}" srcset="${escapeHtml(cardImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 24px), (max-width: 1099px) calc((100vw - 48px) / 2), 380px" width="720" height="405" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${eager ? 'eager' : 'lazy'}" fetchpriority="${eager ? 'high' : 'auto'}" decoding="async" />`
     : '';
   const summary = limitTextWords(article.excerpt || article.seo_description || '', 35);
-  const metaRow = compactMeta
+  const metaRow = minimalListing
     ? `<div class="article-card-meta">
-        <span>${renderPublicIcon('current')} ${escapeHtml(formatDateLabel(article.updated_at).split(',')[0])}</span>
+        <span>${renderPublicIcon('current')} ${escapeHtml(formatCardDateLabel(article.updated_at))}</span>
+        <span>${escapeHtml(`${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`)}</span>
+      </div>`
+    : compactMeta
+    ? `<div class="article-card-meta">
+        <span>${renderPublicIcon('current')} ${escapeHtml(formatCardDateLabel(article.updated_at))}</span>
         <span>${renderPublicIcon('folder')} ${escapeHtml(article.category || 'अपडेट')}</span>
         <span>${escapeHtml(`${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`)}</span>
       </div>`
     : `<div class="date">${escapeHtml(formatDateLabel(article.updated_at))}</div>`;
 
-  return `<a class="post-card" href="/${escapeHtml(article.slug)}">
+  return `<a class="post-card${className ? ` ${escapeHtml(className)}` : ''}" href="/${escapeHtml(article.slug)}">
     ${image}
     <div class="post-card-body">
-      <div class="kicker">${escapeHtml(article.category || 'Latest')}</div>
+      ${minimalListing ? '' : `<div class="kicker">${escapeHtml(article.category || 'Latest')}</div>`}
       <h2>${escapeHtml(article.title)}</h2>
-      ${compactMeta ? '' : `<p>${escapeHtml(summary || 'Read the latest update on Hindiline.')}</p>`}
+      ${compactMeta || minimalListing ? '' : `<p>${escapeHtml(summary || 'Read the latest update on Hindiline.')}</p>`}
       ${metaRow}
     </div>
   </a>`;
@@ -3116,16 +3859,22 @@ function renderPublicPostCard(article: PublicArticleRow, options: { eager?: bool
 function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
   const spotlight = renderHomeCarousel(articles);
   const trending = renderHomeTrendingStrip(articles);
-  const recentArticles = articles.slice(0, 4);
+  const recentArticles = articles.slice(4, 12);
   const recent = recentArticles.length
     ? `<section class="wrap post-grid-section" id="recent-news">
         <div class="section-head">
           <div>
             <h2>हाल में जोड़े गए लेख</h2>
           </div>
-          <a class="section-link" href="/articles">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
+          <a class="section-link desktop-section-link" href="/articles">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
         </div>
-        <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')}</div>
+        <div class="grid">${recentArticles.map((article, index) => renderPublicPostCard(article, {
+          eager: index < 2,
+          compactMeta: true,
+          className: index >= 4 ? 'home-recent-extra' : '',
+        })).join('')}</div>
+        ${recentArticles.length > 4 ? '<div class="home-recent-sentinel" data-home-recent-sentinel aria-hidden="true"></div>' : ''}
+        <a class="section-link home-recent-link${recentArticles.length <= 4 ? ' is-visible' : ''}" data-home-recent-link href="/articles">सभी लेख देखें ${renderPublicIcon('arrow')}</a>
       </section>`
     : '';
   const empty = !articles.length
@@ -3196,12 +3945,101 @@ function articleCardsList(articles: PublicArticleRow[]) {
     : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
 }
 
+function renderLazyArticleListing(articles: PublicArticleRow[], hasMore: boolean, categorySlug = '') {
+  if (!articles.length) {
+    return '<section class="wrap empty">अभी कोई published article नहीं है।</section>';
+  }
+
+  const minimalListing = Boolean(categorySlug);
+  const cards = articles.length
+    ? articles.map((article, index) => renderPublicPostCard(article, {
+      eager: index < 2,
+      compactMeta: !minimalListing,
+      minimalListing,
+      className: index >= 4 ? 'mobile-initial-buffer' : '',
+    })).join('')
+    : '';
+
+  return `<section class="wrap post-grid-section">
+    <div class="grid" data-articles-grid>${cards}</div>
+    <div class="load-sentinel" data-articles-sentinel data-offset="${articles.length}" data-has-more="${hasMore ? '1' : '0'}" data-category="${escapeHtml(categorySlug)}">
+      <span class="load-status">${hasMore || articles.length > 4 ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।'}</span>
+    </div>
+  </section>
+  <script>
+    (() => {
+      const grid = document.querySelector('[data-articles-grid]');
+      const sentinel = document.querySelector('[data-articles-sentinel]');
+      if (!grid || !sentinel) return;
+      const mobileQuery = window.matchMedia('(max-width: 699px)');
+      const bufferedCards = Array.from(grid.querySelectorAll('.mobile-initial-buffer'));
+      if (!mobileQuery.matches) {
+        bufferedCards.forEach((card) => card.classList.add('is-visible'));
+      }
+      let loading = false;
+      let observer = null;
+      const setStatus = (message) => {
+        const status = sentinel.querySelector('.load-status');
+        if (status) status.textContent = message;
+      };
+      const loadMore = async () => {
+        if (loading) return;
+        const isMobile = mobileQuery.matches;
+        const hiddenBuffers = isMobile
+          ? bufferedCards.filter((card) => !card.classList.contains('is-visible'))
+          : [];
+        hiddenBuffers.forEach((card) => card.classList.add('is-visible'));
+        const requestLimit = Math.max(0, (isMobile ? 4 : 6) - hiddenBuffers.length);
+        if (sentinel.dataset.hasMore !== '1' || requestLimit === 0) {
+          if (sentinel.dataset.hasMore !== '1') {
+            setStatus('सभी लेख दिखा दिए गए हैं।');
+            if (observer) observer.disconnect();
+          }
+          return;
+        }
+        loading = true;
+        try {
+          const params = new URLSearchParams();
+          params.set('offset', sentinel.dataset.offset || String(grid.children.length));
+          params.set('limit', String(requestLimit));
+          if (sentinel.dataset.category) params.set('category', sentinel.dataset.category);
+          const response = await fetch('/articles-feed?' + params.toString(), { headers: { Accept: 'application/json' } });
+          if (!response.ok) throw new Error('Request failed');
+          const data = await response.json();
+          if (data.html) grid.insertAdjacentHTML('beforeend', data.html);
+          sentinel.dataset.offset = String(data.nextOffset);
+          sentinel.dataset.hasMore = data.hasMore ? '1' : '0';
+          setStatus(data.hasMore ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।');
+          if (!data.hasMore && observer) observer.disconnect();
+        } catch {
+          sentinel.dataset.hasMore = '0';
+          setStatus('लेख लोड नहीं हो पाए। कृपया पेज रीफ्रेश करें।');
+          if (observer) observer.disconnect();
+        } finally {
+          loading = false;
+        }
+      };
+      const needsLoad = sentinel.dataset.hasMore === '1'
+        || bufferedCards.some((card) => !card.classList.contains('is-visible'));
+      if (!needsLoad) {
+        setStatus('सभी लेख दिखा दिए गए हैं।');
+        return;
+      }
+      if (!('IntersectionObserver' in window)) {
+        loadMore();
+        return;
+      }
+      observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMore();
+      }, { rootMargin: '360px 0px' });
+      observer.observe(sentinel);
+    })();
+  </script>`;
+}
+
 function publicArticlesPage(articles: PublicArticleRow[], categories: CategoryRow[], hasMore: boolean) {
   const title = 'सभी लेख - हिंदीलाइन';
   const description = 'हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं से जुड़े सभी ताजा लेख पढ़ें।';
-  const cards = articles.length
-    ? articles.map((article, index) => renderPublicPostCard(article, { eager: index < 2, compactMeta: true })).join('')
-    : '';
   const content = `<section class="hero">
     <div class="wrap">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>सभी लेख</span></nav>
@@ -3209,41 +4047,7 @@ function publicArticlesPage(articles: PublicArticleRow[], categories: CategoryRo
       <p>हिंदीलाइन पर प्रकाशित ताजा अपडेट, भर्ती, एडमिट कार्ड, रिजल्ट और उपयोगी सरकारी जानकारी एक जगह पढ़ें।</p>
     </div>
   </section>
-  <section class="wrap post-grid-section">
-    <div class="grid" data-articles-grid>${cards}</div>
-    ${articles.length ? `<div class="load-sentinel" data-articles-sentinel data-page="2" data-has-more="${hasMore ? '1' : '0'}"><span class="load-status">${hasMore ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।'}</span></div>` : '<div class="empty">अभी कोई published article नहीं है।</div>'}
-  </section>
-  <script>
-    (() => {
-      const grid = document.querySelector('[data-articles-grid]');
-      const sentinel = document.querySelector('[data-articles-sentinel]');
-      if (!grid || !sentinel || sentinel.dataset.hasMore !== '1') return;
-      let loading = false;
-      const loadMore = async () => {
-        if (loading || sentinel.dataset.hasMore !== '1') return;
-        loading = true;
-        try {
-          const page = Number(sentinel.dataset.page || '2');
-          const response = await fetch('/articles-feed?page=' + page, { headers: { Accept: 'application/json' } });
-          if (!response.ok) throw new Error('Request failed');
-          const data = await response.json();
-          if (data.html) grid.insertAdjacentHTML('beforeend', data.html);
-          sentinel.dataset.page = String(page + 1);
-          sentinel.dataset.hasMore = data.hasMore ? '1' : '0';
-          sentinel.querySelector('.load-status').textContent = data.hasMore ? 'और लेख लोड हो रहे हैं...' : 'सभी लेख दिखा दिए गए हैं।';
-        } catch {
-          sentinel.dataset.hasMore = '0';
-          sentinel.querySelector('.load-status').textContent = 'लेख लोड नहीं हो पाए। कृपया पेज रीफ्रेश करें।';
-        } finally {
-          loading = false;
-        }
-      };
-      const observer = new IntersectionObserver((entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) loadMore();
-      }, { rootMargin: '360px 0px' });
-      observer.observe(sentinel);
-    })();
-  </script>`;
+  ${renderLazyArticleListing(articles, hasMore)}`;
 
   return publicShell(
     title,
@@ -3274,6 +4078,15 @@ function isJobsCategory(category: CategoryRow) {
   return isVacancyArticle(category.name) || isVacancyArticle(category.slug);
 }
 
+function isRailwayCategory(category: CategoryRow) {
+  const slug = normalizeTargetCategoryKey(category.slug);
+  const name = normalizeTargetCategoryKey(category.name);
+  return slug === 'railway'
+    || slug === 'indianrailway'
+    || name === 'railway'
+    || name.includes('रेलवे');
+}
+
 function categorySeoTitle(category: CategoryRow) {
   return isJobsCategory(category)
     ? JOBS_CATEGORY_SEO_TITLE
@@ -3281,7 +4094,9 @@ function categorySeoTitle(category: CategoryRow) {
 }
 
 function categorySeoDescription(category: CategoryRow) {
-  return isJobsCategory(category)
+  return isRailwayCategory(category)
+    ? RAILWAY_CATEGORY_DESCRIPTION
+    : isJobsCategory(category)
     ? JOBS_CATEGORY_SEO_DESCRIPTION
     : category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
 }
@@ -3337,14 +4152,17 @@ function categoryBreadcrumbJsonLd(category: CategoryRow) {
   };
 }
 
-function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
+function publicCategoryPage(category: CategoryRow, articles: PublicArticleRow[], categories: CategoryRow[], hasMore: boolean) {
   const title = categorySeoTitle(category);
   const description = categorySeoDescription(category);
-  const visibleDescription = category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
+  const railwayCategory = isRailwayCategory(category);
+  const visibleDescription = railwayCategory
+    ? RAILWAY_CATEGORY_DESCRIPTION
+    : category.description || `${category.name} category ke latest Hindi/Hinglish news, guides aur updates padhein.`;
   return publicShell(
     title,
     description,
-    `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(category.name)}</span></nav><h1>${escapeHtml(category.name)}</h1><p>${escapeHtml(visibleDescription)}</p></div></section>${articleCardsList(articles)}`,
+    `<section class="hero${railwayCategory ? ' railway-category' : ''}"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(category.name)}</span></nav><h1>${escapeHtml(category.name)}</h1><p>${escapeHtml(visibleDescription)}</p></div></section>${renderLazyArticleListing(articles, hasMore, category.slug)}`,
     `<link rel="canonical" href="${escapeHtml(publicCategoryUrl(category.slug))}" />
   ${jsonLdScript(categoryPageJsonLd(category, articles))}
   ${jsonLdScript(categoryBreadcrumbJsonLd(category))}`,
@@ -3700,8 +4518,83 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
   const sitemapPath = url.pathname.toLowerCase();
   setPublicSecurityHeaders(c);
 
+  if (url.pathname === '/api/public-notifications/test-device' && c.req.method === 'POST') {
+    const body = await c.req.json<{ token?: string; label?: string; subscriptionId?: string }>()
+      .catch(() => ({} as { token?: string; label?: string; subscriptionId?: string }));
+    const token = normalizeText(body.token);
+    const subscriptionId = normalizeText(body.subscriptionId);
+    if (!token || !(await verifyNotificationTestToken(c.env.SESSION_SECRET, token))) {
+      return c.json({ ok: false, message: 'Test link invalid ya expire ho गया है।' }, 403);
+    }
+    if (!/^[a-f0-9-]{20,80}$/i.test(subscriptionId)) {
+      return c.json({ ok: false, message: 'Valid OneSignal Subscription ID required है।' }, 400);
+    }
+    const now = new Date().toISOString();
+    const existing = await c.env.ADMIN_DB
+      .prepare('SELECT id FROM notification_test_devices WHERE subscription_id = ? LIMIT 1')
+      .bind(subscriptionId)
+      .first<{ id: string }>();
+    const label = truncateNotificationText(normalizeText(body.label) || 'Primary test browser', 80);
+    if (existing) {
+      await c.env.ADMIN_DB
+        .prepare(
+          `UPDATE notification_test_devices
+           SET label = ?, user_agent = ?, opted_in = 1, last_seen_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(label, c.req.header('user-agent') || null, now, now, existing.id)
+        .run();
+    } else {
+      await c.env.ADMIN_DB
+        .prepare(
+          `INSERT INTO notification_test_devices
+           (id, label, subscription_id, user_agent, opted_in, last_seen_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), label, subscriptionId, c.req.header('user-agent') || null, now, now, now)
+        .run();
+    }
+    return c.json({ ok: true, subscriptionId });
+  }
+
   if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
     return c.text('Not found', 404);
+  }
+
+  if (url.pathname === '/OneSignalSDKWorker.js') {
+    return new Response(c.req.method === 'HEAD' ? null : ONESIGNAL_SERVICE_WORKER, {
+      headers: {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Service-Worker-Allowed': '/',
+      },
+    });
+  }
+
+  if (url.pathname === '/notification-config.json') {
+    return c.json(
+      { appId: c.env.ONESIGNAL_APP_ID || '' },
+      200,
+      { 'Cache-Control': 'no-store' },
+    );
+  }
+
+  if (url.pathname === '/manifest.webmanifest') {
+    return c.json({
+      name: 'हिंदीलाइन',
+      short_name: 'हिंदीलाइन',
+      description: HOMEPAGE_META_DESCRIPTION,
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      background_color: '#ffffff',
+      theme_color: '#0a2647',
+      lang: 'hi',
+      icons: [
+        { src: PUBLIC_APPLE_ICON_URL, sizes: '192x192', type: 'image/png' },
+        { src: `${PUBLIC_APPLE_ICON_URL}?w=512&q=82&f=webp`, sizes: '512x512', type: 'image/webp' },
+      ],
+    }, 200, { 'Cache-Control': 'public, max-age=3600' });
   }
 
   if (url.pathname === '/favicon.ico') {
@@ -3788,21 +4681,84 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     return cachePublicPage(c, url, c.html(publicInfoPage('privacy', categories)));
   }
 
+  if (url.pathname === '/notification-test') {
+    const token = normalizeText(url.searchParams.get('token'));
+    const valid = token && await verifyNotificationTestToken(c.env.SESSION_SECRET, token);
+    if (!valid) {
+      return c.html(publicShell(
+        'Notification test link invalid - Hindiline',
+        'The notification test registration link is invalid or expired.',
+        '<section class="wrap empty">यह test link invalid या expire हो चुका है। Admin panel से नया link बनाएं।</section>',
+        '<meta name="robots" content="noindex,nofollow" />',
+        { categories },
+      ), 403);
+    }
+    const safeToken = escapeJsonForHtml(token);
+    return c.html(publicShell(
+      'Register notification test device - Hindiline',
+      'Register this browser as a Hindiline notification test device.',
+      `<section class="hero"><div class="wrap">
+        <h1>Notification test device</h1>
+        <p>इस browser को केवल private test notifications के लिए register करें।</p>
+        <div class="hero-actions">
+          <button class="hero-btn primary" type="button" data-register-test-device>इस device को register करें</button>
+        </div>
+        <p data-test-device-status></p>
+      </div></section>
+      <script>
+        document.querySelector('[data-register-test-device]').addEventListener('click', async (event) => {
+          const button = event.currentTarget;
+          const status = document.querySelector('[data-test-device-status]');
+          button.disabled = true;
+          status.textContent = 'Permission और subscription verify हो रही है…';
+          try {
+            await window.__hindilineRegisterTestDevice(${safeToken}, 'Primary browser');
+            status.textContent = 'Device successfully register हो गया। अब admin panel से test push भेजें।';
+            button.textContent = 'Registered';
+          } catch (error) {
+            status.textContent = error.message || 'Registration failed';
+            button.disabled = false;
+          }
+        });
+      </script>`,
+      '<meta name="robots" content="noindex,nofollow" />',
+      { categories },
+    ));
+  }
+
   if (url.pathname === '/articles') {
-    const rows = await readPublishedArticlesPage(c.env.ADMIN_DB, 1, 12);
-    const hasMore = rows.length > 12;
-    return cachePublicPage(c, url, c.html(publicArticlesPage(rows.slice(0, 12), categories, hasMore)));
+    const rows = await readPublishedArticlesBatch(c.env.ADMIN_DB, 0, 6);
+    const hasMore = rows.length > 6;
+    return cachePublicPage(c, url, c.html(publicArticlesPage(rows.slice(0, 6), categories, hasMore)));
   }
 
   if (url.pathname === '/articles-feed') {
+    const requestedLimit = Number(url.searchParams.get('limit'));
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.max(1, Math.min(24, Math.floor(requestedLimit)))
+      : 12;
     const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
-    const rows = await readPublishedArticlesPage(c.env.ADMIN_DB, page, 12);
-    const hasMore = rows.length > 12;
-    const html = rows
-      .slice(0, 12)
-      .map((article) => renderPublicPostCard(article, { compactMeta: true }))
+    const requestedOffset = url.searchParams.get('offset');
+    const offset = requestedOffset === null
+      ? (page - 1) * limit
+      : Math.max(0, Number(requestedOffset) || 0);
+    const categorySlug = normalizeText(url.searchParams.get('category'));
+    const category = categorySlug
+      ? categories.find((item) => item.slug === categorySlug)
+      : null;
+    if (categorySlug && !category) {
+      return c.json({ message: 'Category not found' }, 404);
+    }
+    const rows = await readPublishedArticlesBatch(c.env.ADMIN_DB, offset, limit, category?.name || '');
+    const visibleRows = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    const html = visibleRows
+      .map((article) => renderPublicPostCard(article, {
+        compactMeta: !category,
+        minimalListing: Boolean(category),
+      }))
       .join('');
-    return c.json({ html, hasMore });
+    return c.json({ html, nextOffset: offset + visibleRows.length, hasMore });
   }
 
   if (url.pathname === '/search') {
@@ -3820,8 +4776,9 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
     if (!category) {
       return c.html(publicShell('Category not found - Hindiline', 'The requested category could not be found.', '<section class="wrap empty">Category nahi mili. <a href="/">Latest blogs</a> dekhein.</section>', '', { categories }), 404);
     }
-    const articles = await readPublishedArticlesByCategory(c.env.ADMIN_DB, category.name);
-    return cachePublicPage(c, url, c.html(publicCategoryPage(category, articles, categories)));
+    const rows = await readPublishedArticlesBatch(c.env.ADMIN_DB, 0, 6, category.name);
+    const hasMore = rows.length > 6;
+    return cachePublicPage(c, url, c.html(publicCategoryPage(category, rows.slice(0, 6), categories, hasMore)));
   }
 
   if (url.pathname.startsWith('/author/')) {
@@ -3926,7 +4883,7 @@ function loginPage(error = '') {
 function appShellPage(
   user: SessionUser,
   options: {
-    activeNav: 'dashboard' | 'articles' | 'categories' | 'authors' | 'training' | 'seo';
+    activeNav: 'dashboard' | 'articles' | 'categories' | 'authors' | 'training' | 'seo' | 'notifications';
     pageTitle: string;
     eyebrow: string;
     title: string;
@@ -3955,6 +4912,7 @@ function appShellPage(
       ${navItem('/categories', 'Categories', options.activeNav === 'categories')}
       ${navItem('/authors', 'Authors', options.activeNav === 'authors')}
       ${navItem('/training', 'Training', options.activeNav === 'training')}
+      ${navItem('/notifications', 'Notifications', options.activeNav === 'notifications')}
       <div class="sidebar-footer">
         <div class="sidebar-user">
           <strong>${escapeHtml(user.displayName)}</strong>
@@ -3984,6 +4942,287 @@ function appShellPage(
 </html>`;
 }
 
+
+function notificationsPage(
+  user: SessionUser,
+  settings: NotificationSettingsRow,
+  campaigns: NotificationCampaignRow[],
+  articles: PublicArticleRow[],
+  categories: CategoryRow[],
+  testDevices: NotificationTestDeviceRow[],
+  health: { appId: boolean; restKey: boolean; queue: boolean },
+) {
+  const articleOptions = articles
+    .map((article) => `<option value="${escapeHtml(article.id)}">${escapeHtml(article.title)}</option>`)
+    .join('');
+  const categoryOptions = categories
+    .map((category) => `<option value="${escapeHtml(category.slug)}">${escapeHtml(category.name)}</option>`)
+    .join('');
+  const deviceOptions = testDevices
+    .filter((device) => Boolean(Number(device.opted_in)))
+    .map((device) => `<option value="${escapeHtml(device.subscription_id)}">${escapeHtml(device.label)}</option>`)
+    .join('');
+  const articleJson = escapeJsonForHtml(articles.map((article) => ({
+    id: article.id,
+    title: truncateNotificationText(article.title, 80),
+    body: truncateNotificationText(article.excerpt || article.seo_description || 'हिंदीलाइन पर पूरी जानकारी पढ़ें।', 120),
+    imageUrl: article.featured_image_url ? optimizedImageUrl(article.featured_image_url, 720, 70) : '',
+    targetUrl: article.canonical_url || publicArticleUrl(article.slug),
+    category: article.category || '',
+  })));
+  const historyRows = campaigns.length
+    ? campaigns.map((campaign) => `
+      <tr>
+        <td>
+          <strong>${escapeHtml(campaign.title)}</strong>
+          <div class="article-card-meta">${escapeHtml(campaign.source)} · ${escapeHtml(campaign.audience_type)}${campaign.audience_value ? ` · ${escapeHtml(campaign.audience_value)}` : ''}</div>
+          ${campaign.last_error ? `<div class="notice error" style="margin-top:6px;">${escapeHtml(campaign.last_error)}</div>` : ''}
+        </td>
+        <td><span class="badge badge-${campaign.status === 'sent' ? 'published' : campaign.status === 'failed' ? 'draft' : 'info'}">${escapeHtml(campaign.status)}</span></td>
+        <td>${escapeHtml(formatDateLabel(campaign.scheduled_at || campaign.created_at))}</td>
+        <td>${Number(campaign.successful_count)} sent · ${Number(campaign.clicked_count)} clicked</td>
+        <td>
+          <div class="article-actions">
+            ${campaign.status === 'sent' ? `<button class="btn btn-secondary" data-campaign-action="refresh" data-id="${escapeHtml(campaign.id)}">Refresh</button>` : ''}
+            ${['ready', 'failed'].includes(campaign.status) ? `<button class="btn btn-primary" data-campaign-action="retry" data-id="${escapeHtml(campaign.id)}">Send</button>` : ''}
+            ${['ready', 'scheduled', 'queued'].includes(campaign.status) ? `<button class="btn btn-ghost" data-campaign-action="cancel" data-id="${escapeHtml(campaign.id)}">Cancel</button>` : ''}
+          </div>
+        </td>
+      </tr>`)
+      .join('')
+    : '<tr><td colspan="5"><div class="empty-state">Abhi koi notification campaign nahi hai.</div></td></tr>';
+
+  return appShellPage(user, {
+    activeNav: 'notifications',
+    pageTitle: 'Notifications - Samoon Digital',
+    eyebrow: 'Notifications',
+    title: 'Push Notifications',
+    subtitle: 'OneSignal campaigns, automatic publishing rules aur test devices control karein.',
+    content: `
+      <div class="stats-grid">
+        <div class="stat-card"><div class="label">OneSignal App</div><div class="value" style="font-size:1.15rem;">${health.appId ? 'Ready' : 'Missing'}</div></div>
+        <div class="stat-card"><div class="label">REST API Key</div><div class="value" style="font-size:1.15rem;">${health.restKey ? 'Ready' : 'Missing'}</div></div>
+        <div class="stat-card"><div class="label">Cloudflare Queue</div><div class="value" style="font-size:1.15rem;">${health.queue ? 'Ready' : 'Missing'}</div></div>
+        <div class="stat-card"><div class="label">Test Devices</div><div class="value">${testDevices.length}</div></div>
+      </div>
+
+      <div class="cols-2">
+        <div class="card">
+          <div class="card-header"><h2>Automatic sending</h2></div>
+          <div class="card-body">
+            <form class="form" id="notification-settings-form">
+              <label class="radio-control">
+                <strong>Auto-send after publish</strong>
+                <input id="auto-send-enabled" type="checkbox"${Number(settings.auto_send_enabled) ? ' checked' : ''} />
+              </label>
+              <div class="cols-2">
+                <div class="field">
+                  <label for="max-auto">Maximum auto sends / rolling 24h</label>
+                  <input id="max-auto" type="number" min="0" max="10" value="${escapeHtml(String(settings.max_auto_per_24h))}" />
+                </div>
+                <div class="field">
+                  <label>Quiet hours (IST)</label>
+                  <input value="${escapeHtml(String(settings.quiet_start_hour))}:00–${escapeHtml(String(settings.quiet_end_hour))}:00" disabled />
+                </div>
+              </div>
+              <button class="btn btn-primary" type="submit">Save settings</button>
+              <div class="notice" id="settings-notice"></div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>Register test browser</h2></div>
+          <div class="card-body stack">
+            <p style="color:var(--text-muted);line-height:1.6;">Private test link isi browser ya phone par kholkar permission allow karein. Link 1 hour mein expire hoga.</p>
+            <button class="btn btn-secondary" id="create-test-link" type="button">Create test registration link</button>
+            <div class="notice" id="test-link-notice"></div>
+            <div class="item-list">
+              ${testDevices.map((device) => `<div class="item-row"><div><div class="title">${escapeHtml(device.label)}</div><div class="meta">${escapeHtml(device.subscription_id)}</div></div><span class="badge badge-info">${Number(device.opted_in) ? 'Active' : 'Inactive'}</span></div>`).join('') || '<div class="empty-state">No test device registered.</div>'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Create campaign</h2></div>
+        <div class="card-body">
+          <form class="form" id="notification-campaign-form">
+            <div class="cols-2">
+              <div class="field">
+                <label for="campaign-article">Published article</label>
+                <select id="campaign-article" required><option value="">Select article</option>${articleOptions}</select>
+              </div>
+              <div class="field">
+                <label for="campaign-audience">Audience</label>
+                <select id="campaign-audience">
+                  <option value="all">All subscribers</option>
+                  <option value="category">Category subscribers</option>
+                  <option value="test">Test device only</option>
+                </select>
+              </div>
+            </div>
+            <div class="cols-2">
+              <div class="field" id="category-audience-field" hidden>
+                <label for="campaign-category">Category</label>
+                <select id="campaign-category">${categoryOptions}</select>
+              </div>
+              <div class="field" id="test-audience-field" hidden>
+                <label for="campaign-test-device">Test device</label>
+                <select id="campaign-test-device">${deviceOptions}</select>
+              </div>
+              <div class="field">
+                <label for="campaign-schedule">Schedule (optional, local time)</label>
+                <input id="campaign-schedule" type="datetime-local" />
+              </div>
+            </div>
+            <div class="field"><label for="campaign-title">Notification title</label><input id="campaign-title" maxlength="80" required /></div>
+            <div class="field"><label for="campaign-body">Notification body</label><textarea id="campaign-body" maxlength="120" required></textarea></div>
+            <div class="cols-2">
+              <div class="field"><label for="campaign-image">Featured image URL</label><input id="campaign-image" type="url" /></div>
+              <div class="field"><label for="campaign-url">Article URL</label><input id="campaign-url" type="url" required /></div>
+            </div>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+              <img id="campaign-preview-image" alt="" style="display:none;width:160px;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid var(--border);" />
+              <div><strong id="campaign-preview-title"></strong><p id="campaign-preview-body" style="margin-top:5px;color:var(--text-muted);max-width:520px;"></p></div>
+            </div>
+            <button class="btn btn-primary" type="submit">Create and queue campaign</button>
+            <div class="notice" id="campaign-notice"></div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Campaign history</h2></div>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Campaign</th><th>Status</th><th>Schedule</th><th>Results</th><th>Actions</th></tr></thead>
+            <tbody>${historyRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <script>
+        const notificationArticles = ${articleJson};
+        const articleSelect = document.getElementById('campaign-article');
+        const audienceSelect = document.getElementById('campaign-audience');
+        const syncAudienceFields = () => {
+          document.getElementById('category-audience-field').hidden = audienceSelect.value !== 'category';
+          document.getElementById('test-audience-field').hidden = audienceSelect.value !== 'test';
+        };
+        const syncPreview = () => {
+          document.getElementById('campaign-preview-title').textContent = document.getElementById('campaign-title').value;
+          document.getElementById('campaign-preview-body').textContent = document.getElementById('campaign-body').value;
+          const image = document.getElementById('campaign-preview-image');
+          image.src = document.getElementById('campaign-image').value;
+          image.style.display = image.src ? 'block' : 'none';
+        };
+        articleSelect.addEventListener('change', () => {
+          const article = notificationArticles.find((item) => item.id === articleSelect.value);
+          if (!article) return;
+          document.getElementById('campaign-title').value = article.title;
+          document.getElementById('campaign-body').value = article.body;
+          document.getElementById('campaign-image').value = article.imageUrl;
+          document.getElementById('campaign-url').value = article.targetUrl;
+          syncPreview();
+        });
+        audienceSelect.addEventListener('change', syncAudienceFields);
+        ['campaign-title','campaign-body','campaign-image'].forEach((id) => document.getElementById(id).addEventListener('input', syncPreview));
+        syncAudienceFields();
+
+        document.getElementById('notification-settings-form').addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const notice = document.getElementById('settings-notice');
+          try {
+            const response = await fetch('/api/notifications/settings', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                autoSendEnabled: document.getElementById('auto-send-enabled').checked,
+                maxAutoPer24h: Number(document.getElementById('max-auto').value),
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Settings failed');
+            notice.textContent = 'Settings saved.';
+            notice.className = 'notice ok';
+          } catch (error) {
+            notice.textContent = error.message;
+            notice.className = 'notice error';
+          }
+        });
+
+        document.getElementById('create-test-link').addEventListener('click', async () => {
+          const notice = document.getElementById('test-link-notice');
+          const response = await fetch('/api/notifications/test-link', { method: 'POST' });
+          const data = await response.json();
+          if (!response.ok) {
+            notice.textContent = data.message || 'Unable to create link';
+            notice.className = 'notice error';
+            return;
+          }
+          notice.innerHTML = '<a href="' + data.url + '" target="_blank" rel="noopener">' + data.url + '</a>';
+          notice.className = 'notice ok';
+        });
+
+        document.getElementById('notification-campaign-form').addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const notice = document.getElementById('campaign-notice');
+          const audienceType = audienceSelect.value;
+          const audienceValue = audienceType === 'category'
+            ? document.getElementById('campaign-category').value
+            : audienceType === 'test'
+              ? document.getElementById('campaign-test-device').value
+              : '';
+          const scheduleValue = document.getElementById('campaign-schedule').value;
+          if (!scheduleValue && audienceType !== 'test') {
+            const audienceLabel = audienceType === 'category' ? 'selected category' : 'all subscribers';
+            if (!confirm('Yeh notification abhi ' + audienceLabel + ' ko bheji jayegi. Send karein?')) return;
+          }
+          try {
+            const response = await fetch('/api/notifications/campaigns', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                articleId: articleSelect.value,
+                audienceType,
+                audienceValue,
+                title: document.getElementById('campaign-title').value,
+                body: document.getElementById('campaign-body').value,
+                imageUrl: document.getElementById('campaign-image').value,
+                targetUrl: document.getElementById('campaign-url').value,
+                scheduledAt: scheduleValue
+                  ? new Date(scheduleValue).toISOString()
+                  : '',
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Campaign failed');
+            window.location.reload();
+          } catch (error) {
+            notice.textContent = error.message;
+            notice.className = 'notice error';
+          }
+        });
+
+        document.querySelectorAll('[data-campaign-action]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const action = button.dataset.campaignAction;
+            if (action === 'cancel' && !confirm('Campaign cancel karein?')) return;
+            button.disabled = true;
+            const response = await fetch('/api/notifications/campaigns/' + button.dataset.id + '/' + action, { method: 'POST' });
+            const data = await response.json();
+            if (!response.ok) {
+              alert(data.message || 'Action failed');
+              button.disabled = false;
+              return;
+            }
+            window.location.reload();
+          });
+        });
+      </script>
+    `,
+  });
+}
 
 function dashboardPage(user: SessionUser, metrics: DashboardMetrics) {
   const recentList = metrics.recentArticles.length
@@ -5287,7 +6526,12 @@ app.use('*', async (c, next) => {
     return c.redirect(url.toString(), 301);
   }
 
-  if (host === 'hindiline.com' || host === 'www.hindiline.com') {
+  if (host === 'www.hindiline.com') {
+    url.hostname = 'hindiline.com';
+    return c.redirect(url.toString(), 301);
+  }
+
+  if (host === 'hindiline.com') {
     return handlePublicSite(c);
   }
 
@@ -5444,6 +6688,182 @@ app.get('/training', async (c) => {
   return c.html(trainingPage(session, categories, samples, message));
 });
 
+app.get('/notifications', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.redirect('/');
+
+  const [settings, campaigns, articleRows, categories, testDevices] = await Promise.all([
+    readNotificationSettings(c.env.ADMIN_DB),
+    queryAll<NotificationCampaignRow>(
+      c.env.ADMIN_DB.prepare('SELECT * FROM notification_campaigns ORDER BY datetime(created_at) DESC LIMIT 50'),
+    ),
+    readPublishedArticlesPage(c.env.ADMIN_DB, 1, 24),
+    readCategories(c.env.ADMIN_DB),
+    queryAll<NotificationTestDeviceRow>(
+      c.env.ADMIN_DB.prepare('SELECT * FROM notification_test_devices ORDER BY datetime(updated_at) DESC LIMIT 20'),
+    ),
+  ]);
+  return c.html(notificationsPage(
+    session,
+    settings,
+    campaigns,
+    articleRows.slice(0, 24),
+    categories,
+    testDevices,
+    {
+      appId: Boolean(c.env.ONESIGNAL_APP_ID),
+      restKey: Boolean(c.env.ONESIGNAL_REST_API_KEY),
+      queue: Boolean(c.env.NOTIFICATION_QUEUE),
+    },
+  ));
+});
+
+app.patch('/api/notifications/settings', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  const body = await c.req.json<{ autoSendEnabled?: boolean; maxAutoPer24h?: number }>();
+  const enabled = body.autoSendEnabled === true;
+  if (enabled && (!c.env.ONESIGNAL_REST_API_KEY || !c.env.NOTIFICATION_QUEUE)) {
+    return c.json({ ok: false, message: 'REST API key aur Queue configure hone ke baad auto-send enable karein.' }, 400);
+  }
+  const maxAuto = Math.max(0, Math.min(10, Math.floor(Number(body.maxAutoPer24h) || 0)));
+  await c.env.ADMIN_DB
+    .prepare(
+      `UPDATE notification_settings
+       SET auto_send_enabled = ?, max_auto_per_24h = ?, updated_at = ?
+       WHERE id = 'default'`,
+    )
+    .bind(enabled ? 1 : 0, maxAuto, new Date().toISOString())
+    .run();
+  return c.json({ ok: true });
+});
+
+app.post('/api/notifications/test-link', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  const token = await createNotificationTestToken(c.env.SESSION_SECRET);
+  return c.json({ ok: true, url: `${PUBLIC_SITE_ORIGIN}/notification-test?token=${encodeURIComponent(token)}` });
+});
+
+app.post('/api/notifications/campaigns', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  const body = await c.req.json<{
+    articleId?: string;
+    audienceType?: string;
+    audienceValue?: string;
+    title?: string;
+    body?: string;
+    imageUrl?: string;
+    targetUrl?: string;
+    scheduledAt?: string;
+  }>();
+  const articleId = normalizeText(body.articleId);
+  const audienceType = normalizeText(body.audienceType) || 'all';
+  const audienceValue = normalizeText(body.audienceValue);
+  const title = truncateNotificationText(normalizeText(body.title), 80);
+  const messageBody = truncateNotificationText(normalizeText(body.body), 120);
+  const imageUrl = normalizeText(body.imageUrl);
+  const targetUrl = normalizeText(body.targetUrl);
+  if (!['all', 'category', 'test'].includes(audienceType)) {
+    return c.json({ ok: false, message: 'Invalid audience' }, 400);
+  }
+  if (!title || !messageBody || !targetUrl.startsWith(PUBLIC_SITE_ORIGIN)) {
+    return c.json({ ok: false, message: 'Title, body aur Hindiline article URL required hain.' }, 400);
+  }
+  if (audienceType !== 'all' && !audienceValue) {
+    return c.json({ ok: false, message: 'Audience value required hai.' }, 400);
+  }
+  if (audienceType === 'test') {
+    const testDevice = await c.env.ADMIN_DB
+      .prepare('SELECT id FROM notification_test_devices WHERE subscription_id = ? AND opted_in = 1 LIMIT 1')
+      .bind(audienceValue)
+      .first<{ id: string }>();
+    if (!testDevice) return c.json({ ok: false, message: 'Active test device nahi मिला.' }, 400);
+  }
+  const scheduledDate = normalizeText(body.scheduledAt) ? new Date(normalizeText(body.scheduledAt)) : null;
+  if (scheduledDate && Number.isNaN(scheduledDate.getTime())) {
+    return c.json({ ok: false, message: 'Invalid schedule date' }, 400);
+  }
+  const scheduledAt = scheduledDate && scheduledDate.getTime() > Date.now() ? scheduledDate.toISOString() : null;
+  const canQueue = Boolean(c.env.ONESIGNAL_REST_API_KEY && c.env.NOTIFICATION_QUEUE);
+  const status = scheduledAt ? 'scheduled' : canQueue ? 'queued' : 'ready';
+  const campaignId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await c.env.ADMIN_DB
+    .prepare(
+      `INSERT INTO notification_campaigns (
+        id, article_id, source, audience_type, audience_value, title, body, image_url,
+        target_url, status, scheduled_at, idempotency_key, last_error, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      campaignId,
+      articleId || null,
+      audienceType === 'test' ? 'test' : 'manual',
+      audienceType,
+      audienceValue || null,
+      title,
+      messageBody,
+      imageUrl || null,
+      targetUrl,
+      status,
+      scheduledAt,
+      crypto.randomUUID(),
+      canQueue || scheduledAt ? null : 'REST API key or Queue is not configured',
+      session.id,
+      now,
+      now,
+    )
+    .run();
+  if (status === 'queued') await enqueueNotificationCampaign(c.env, campaignId);
+  return c.json({ ok: true, campaignId, status });
+});
+
+app.post('/api/notifications/campaigns/:id/retry', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  if (!c.env.ONESIGNAL_REST_API_KEY || !c.env.NOTIFICATION_QUEUE) {
+    return c.json({ ok: false, message: 'REST API key or Queue missing है.' }, 503);
+  }
+  const id = c.req.param('id');
+  const campaign = await c.env.ADMIN_DB
+    .prepare('SELECT id, status FROM notification_campaigns WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<{ id: string; status: string }>();
+  if (!campaign || campaign.status === 'sent') return c.json({ ok: false, message: 'Campaign cannot be sent.' }, 400);
+  await c.env.ADMIN_DB
+    .prepare("UPDATE notification_campaigns SET status = 'queued', last_error = NULL, updated_at = ? WHERE id = ?")
+    .bind(new Date().toISOString(), id)
+    .run();
+  await enqueueNotificationCampaign(c.env, id);
+  return c.json({ ok: true });
+});
+
+app.post('/api/notifications/campaigns/:id/cancel', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  await c.env.ADMIN_DB
+    .prepare(
+      "UPDATE notification_campaigns SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('ready','scheduled','queued')",
+    )
+    .bind(new Date().toISOString(), c.req.param('id'))
+    .run();
+  return c.json({ ok: true });
+});
+
+app.post('/api/notifications/campaigns/:id/refresh', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  const campaign = await c.env.ADMIN_DB
+    .prepare('SELECT * FROM notification_campaigns WHERE id = ? LIMIT 1')
+    .bind(c.req.param('id'))
+    .first<NotificationCampaignRow>();
+  if (!campaign) return c.json({ ok: false, message: 'Campaign not found' }, 404);
+  await refreshOneSignalCampaignStats(c.env, campaign);
+  return c.json({ ok: true });
+});
+
 app.get('/api/me', async (c) => {
   const session = await readSession(c);
 
@@ -5470,11 +6890,24 @@ app.patch('/api/articles/:id/status', async (c) => {
     return c.json({ ok: false, message: 'Invalid article status' }, 400);
   }
 
+  const article = await readArticleById(c.env.ADMIN_DB, id);
+  if (!article) {
+    return c.json({ ok: false, message: 'Article not found' }, 404);
+  }
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
     .prepare('UPDATE articles SET status = ?, updated_at = ? WHERE id = ?')
     .bind(status, now, id)
     .run();
+  if (status === 'published' && article.status !== 'published') {
+    c.executionCtx.waitUntil(
+      readArticleById(c.env.ADMIN_DB, id)
+        .then((publishedArticle) => publishedArticle
+          ? createAutomaticNotificationCampaign(c.env, publishedArticle, session.id)
+          : undefined)
+        .catch((error) => console.error('Automatic notification campaign failed:', error)),
+    );
+  }
 
   return c.json({ ok: true, status });
 });
@@ -5547,6 +6980,15 @@ app.patch('/api/articles/:id', async (c) => {
       id,
     )
     .run();
+  if (status === 'published' && article.status !== 'published') {
+    c.executionCtx.waitUntil(
+      readArticleById(c.env.ADMIN_DB, id)
+        .then((publishedArticle) => publishedArticle
+          ? createAutomaticNotificationCampaign(c.env, publishedArticle, session.id)
+          : undefined)
+        .catch((error) => console.error('Automatic notification campaign failed:', error)),
+    );
+  }
 
   return c.json({ ok: true });
 });
@@ -6229,4 +7671,38 @@ app.get('/profile', async (c) => {
   return c.json({ ok: true, user: session });
 });
 
-export default app;
+export default {
+  fetch(request: Request, env: Bindings, ctx: WorkerExecutionContext) {
+    return app.fetch(request, env, ctx);
+  },
+  async queue(batch: WorkerMessageBatch<NotificationQueueMessage>, env: Bindings) {
+    for (const message of batch.messages) {
+      try {
+        await processNotificationCampaign(env, message.body.campaignId, message.attempts || 1);
+        message.ack();
+      } catch (error) {
+        console.error('Notification queue processing failed:', error);
+        message.retry({ delaySeconds: 100 });
+      }
+    }
+  },
+  async scheduled(_controller: unknown, env: Bindings, ctx: WorkerExecutionContext) {
+    ctx.waitUntil((async () => {
+      await enqueueDueNotificationCampaigns(env);
+      const campaigns = await queryAll<NotificationCampaignRow>(
+        env.ADMIN_DB.prepare(
+          `SELECT * FROM notification_campaigns
+           WHERE status = 'sent' AND onesignal_notification_id IS NOT NULL
+           ORDER BY datetime(sent_at) DESC LIMIT 10`,
+        ),
+      );
+      for (const campaign of campaigns) {
+        try {
+          await refreshOneSignalCampaignStats(env, campaign);
+        } catch (error) {
+          console.error('Notification stats refresh failed:', error);
+        }
+      }
+    })());
+  },
+};

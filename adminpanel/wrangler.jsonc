@@ -19,7 +19,13 @@
     "vars": {
         "OPENAI_TEXT_MODEL": "gpt-5.5",
         "OPENAI_IMAGE_MODEL": "gpt-image-2",
-        "R2_PUBLIC_BASE_URL": "https://hindiline.com/assets"
+        "R2_PUBLIC_BASE_URL": "https://hindiline.com/assets",
+        "ONESIGNAL_APP_ID": "0d1a0463-fee5-4003-8a34-d3c3cf222a40"
+    },
+    "triggers": {
+        "crons": [
+            "*/5 * * * *"
+        ]
     },
     "d1_databases": [
         {
@@ -33,5 +39,22 @@
             "binding": "ARTICLE_IMAGES",
             "bucket_name": "hindiline-article-images"
         }
-    ]
+    ],
+    "queues": {
+        "producers": [
+            {
+                "binding": "NOTIFICATION_QUEUE",
+                "queue": "hindiline-notifications"
+            }
+        ],
+        "consumers": [
+            {
+                "queue": "hindiline-notifications",
+                "max_batch_size": 5,
+                "max_batch_timeout": 10,
+                "max_retries": 3,
+                "retry_delay": 100
+            }
+        ]
+    }
 }
