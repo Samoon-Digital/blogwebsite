@@ -140,8 +140,9 @@ Use the private source/user topic only as background. Do not mention source webs
 
 Return ONLY valid JSON with this exact shape:
 {
-  "seo_title": "Readable Hindi SEO title, 55-72 chars",
-  "meta_description": "150-160 chars Hindi summary with main date/action",
+  "seo_title": "Readable Hindi SEO title, 50-65 chars",
+  "meta_description": "120-160 chars Hindi summary with main date/action",
+  "primary_keyword": "Main search keyword used naturally in the summary",
   "featured_image_prompt": "90-150 words, specific Hindi news thumbnail/recruitment update card prompt, department-specific visual, useful poster/editorial composition",
   "featured_image_alt": "Hindi alt text",
   "content": "<p>1-2 line Hindi summary only.</p>",
@@ -173,11 +174,11 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - Fill as many targeted_article_data arrays as facts allow; keep each item short.
-- Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, faqs.
-- Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, faqs.
-- Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, faqs.
+- Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, 3-5 faqs.
+- Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, 3-5 faqs.
+- Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, 3-5 faqs.
 - Featured image prompt must not request a generic laptop/office/candidate-at-desk stock photo. For jobs, make it a recruitment news card with department/post-specific workplace or uniform/document visual. For admit card, show exam/admit-card document and exam hall/checklist visual. For admissions, show college/institute admission form/campus visual.
-- Use text in the image only as a few large clean elements such as department acronym, year, post count or date. Avoid tiny Hindi paragraphs and random decorative text.
+- Use image text only as 2-4 large clean label elements such as department acronym/name, short subject, year, post count or last date. Do not put the full article title on the image. Avoid tiny Hindi paragraphs and random decorative text.
 - If exact official URL is not known, return officialLinks as [].
 - Keep token use low: no long article body HTML. Backend will render the premium UI.`;
     }
@@ -261,12 +262,13 @@ Key schemas to implement:
 - **ImageObject Schema**: Include featured image and every useful inline image with URL/contentUrl, alt/description, caption, width and height when known
 - **Speakable Schema**: Add speakable selectors for the H1, dek/summary and first useful paragraph where applicable
 - **WebSite SearchAction**: Website schema should support site search with a query input
-- **JobPosting Schema**: For jobs/vacancy/recruitment category articles, include a careful JobPosting schema based only on facts in the article
+- Do not generate JobPosting schema for any article. Keep jobs/vacancy/recruitment posts as NewsArticle-style content only.
 
 ### 3. Keyword Research & Optimization
 ${config.keyword_focus || 'Primary keyword should appear naturally in first 100 words of blog.'}
 
 - Include primary keyword in title, first 100 words, and naturally throughout
+- Return the chosen main search keyword in "primary_keyword"; it should be the same phrase readers would search.
 - Use LSI keywords (semantically related keywords) for better ranking
 - Avoid keyword stuffing - maintain natural reading flow
 
@@ -285,7 +287,7 @@ Headline rules:
 - Prefer a strong medium-length headline instead of an ultra-short one. Usually target 8-14 words when natural.
 
 ### 5. Meta Description
-Create 150-160 character description that:
+Create 120-160 character description that:
 - Contains primary keyword
 - Has a clear call-to-action
 - Explains the main benefit
@@ -296,7 +298,7 @@ Create 150-160 character description that:
 ${config.h_structure || 'H1 → H2 → H3 hierarchy'}
 
 Structure:
-- **H1** (1 per page): Main blog title, contains primary keyword. The website renderer adds this from the article title, so do not include an <h1> tag inside the returned content body.
+- **H1** (1 per page): Main blog title, contains primary keyword. The website renderer adds this from the article title, so never include an <h1> tag anywhere inside the returned content body.
 - **H2** (${isVacancyArticle ? '3-5 sections only' : '2-3 sections'}): Main topics, subheadings with variations of keyword
 - **H3** (under each H2): ${isVacancyArticle ? 'Use sparingly only if a key detail must be split out' : 'Detailed subtopics, specific points'}
 
@@ -312,6 +314,7 @@ Example for "Waiting List Kya Hai":
 ### 7. First 100 Words (Most Important!)
 CRITICAL: First 100 words must:
 - Include primary keyword naturally (usually 1-2 times, only more if it still reads naturally)
+- Start with a concise answer summary or quick-facts style opening so search users and AI answer engines can understand the direct answer immediately
 - Explain what the blog is about
 - Give reader reason to continue reading
 - Be engaging and clear
@@ -319,7 +322,7 @@ CRITICAL: First 100 words must:
 - Keep the first paragraph concise and human because the opening summary may be reused as the article description/dek
 
 ### 8. FAQ Section (Powerful for SEO)
-${controls.includeFaqs ? 'Include 4-5 FAQ questions relevant to the topic:' : 'Do not include FAQ questions for this article.'}
+${controls.includeFaqs ? 'Include 3-5 FAQ questions relevant to the topic at the end of the article:' : 'Do not include FAQ questions for this article.'}
 - Format: Q: [Question], A: [Answer]
 - Include keyword variations in questions
 - Provide direct, helpful answers
@@ -354,7 +357,7 @@ ${controls.includeInternalLinks ? 'Add inline internal links to related articles
 - Improves crawlability and user engagement
 - Use actual href values from "Related Internal Articles Available" when relevant.
 - Add links inside paragraphs naturally, not only at the bottom.
-- If related articles are available, include at least 2 natural inline internal links in the body when possible.
+- If related articles are available, include at least 2 natural inline internal links in the body when possible. This is required for crawl paths and topical authority.
 - Do not leave the article body without inline internal links when relevant related articles are provided.
 - Do not output a bottom related-articles CTA block and do not use the wrapper <div class="internal-links">. The backend will append one clean related block automatically.
 - Internal article links must use the exact provided slug paths like "/article-slug", never "/articles/article-slug".
@@ -379,6 +382,8 @@ Guidelines:
 - ALT text: Include primary keyword, descriptive (50-125 chars)
 - Apply "Saved Featured Image Training Notes" directly inside featured_image_prompt when they are available.
 - Respect "Featured Image Instruction" only for featured_image_prompt. Do not force that instruction into inline images unless it also appears in Custom Writer Instructions.
+- Featured image prompt must be article-specific and click-worthy: use the article title/source facts/instructions to create a useful news-thumbnail scene with a strong visual hook, not a generic human photo or plain background.
+- For normal featured images, allow only 2-4 large clean readable label-style elements when they genuinely improve click clarity, such as department/name, short subject, year, count, date, result/admit card label. Do not put the full article title on the image; avoid tiny paragraphs, random letters, and gibberish text.
 
 ### 12B. AI-Placed Inline Images Inside Article
 - Plan useful supporting in-article images for normal long-form articles. Usually return 2-6 inline_images, but use fewer for short articles and only when a visual improves understanding.
@@ -407,8 +412,9 @@ Return ONLY valid JSON with this exact structure:
 
 \`\`\`json
 {
-  "seo_title": "Title optimized for search (roughly 55-72 chars, strong and readable)",
-  "meta_description": "Meta description (150-160 chars)",
+  "seo_title": "Title optimized for search (50-65 chars, strong and readable)",
+  "meta_description": "Meta description (120-160 chars)",
+  "primary_keyword": "Main search keyword naturally used in the first 100 words",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
   "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div>",
@@ -445,7 +451,7 @@ ${isVacancyArticle ? '1B. **Vacancy Focus**: Keep vacancy articles concise and a
 5. **Schema Validation**: Ensure schema markup is valid JSON-LD
 6. **Uniqueness**: Create original content, not copied from other sources
 7. **Authority**: Cite sources where appropriate, build credibility
-8. **Body HTML Only**: Return only article body HTML in content. Do not include <html>, <head>, <body>, duplicate <title>, meta tags, or a duplicate <h1>.
+8. **Body HTML Only**: Return only article body HTML in content. Do not include <html>, <head>, <body>, duplicate <title>, meta tags, or any <h1>.
 9. **Links**: Use valid <a href="..."> anchors. Internal links should point to site slugs like "/slug"; external links must use target="_blank" rel="noopener noreferrer".
 10. **No Source Disclosure**: Never include "Reporting Source", "Source", source website name, source page title labels, or any note saying the article was created from another website.
 11. **Training Fidelity**: When saved training notes are ON, apply them only to the matching layer: headline notes for title tone, article notes for body structure/voice, and image notes for featured image prompt direction.

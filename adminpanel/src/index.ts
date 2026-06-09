@@ -40,6 +40,10 @@ type ArticleRow = {
   excerpt: string | null;
   content: string;
   category: string | null;
+  focus_keyword?: string | null;
+  section_category_id?: string | null;
+  section_category_name?: string | null;
+  section_category_slug?: string | null;
   seo_title: string | null;
   seo_description: string | null;
   featured_image_url?: string | null;
@@ -136,6 +140,10 @@ type PublicArticleRow = {
   excerpt: string | null;
   content: string;
   category: string | null;
+  focus_keyword: string | null;
+  section_category_id: string | null;
+  section_category_name: string | null;
+  section_category_slug: string | null;
   seo_title: string | null;
   seo_description: string | null;
   featured_image_url: string | null;
@@ -172,6 +180,8 @@ type CategoryRow = {
   name: string;
   slug: string;
   description: string | null;
+  seo_title?: string | null;
+  seo_description?: string | null;
   sort_order: number | string;
   created_at: string;
   updated_at: string;
@@ -291,6 +301,8 @@ const PUBLIC_FAVICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favi
 const PUBLIC_APPLE_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
 const PUBLIC_NOTIFICATION_ICON_URL = `${PUBLIC_SITE_ORIGIN}/assets/branding/hindiline-favicon-192.png`;
 const ONESIGNAL_SERVICE_WORKER = 'importScripts("https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js");\n';
+const ONESIGNAL_MAX_SCHEDULE_DAYS = 30;
+const ONESIGNAL_MAX_SCHEDULE_MS = ONESIGNAL_MAX_SCHEDULE_DAYS * 24 * 60 * 60 * 1000;
 const NOTIFICATION_TEST_TOKEN_TTL_MS = 1000 * 60 * 60;
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const PUBLIC_SITE_NAME = 'Hindiline';
@@ -791,7 +803,7 @@ function renderTargetedOfficialLinks(data: TargetedArticleData) {
 }
 
 function renderTargetedFaqs(data: TargetedArticleData) {
-  const faqs = filterTargetedItems(data.faqs, 6);
+  const faqs = filterTargetedItems(data.faqs, 5);
   if (!faqs.length) {
     return '';
   }
@@ -1083,7 +1095,8 @@ function dbText(value: unknown, fallback: string | null = null): string | null {
 
 function normalizeArticleContent(content: string) {
   return content
-    .replace(/^\s*<h1\b[^>]*>[\s\S]*?<\/h1>\s*/i, '')
+    .replace(/<h1\b([^>]*)>/gi, '<h2$1>')
+    .replace(/<\/h1>/gi, '</h2>')
     .replace(/<[^>]+>\s*(?:Reporting\s+Source|Source|स्रोत)\s*[:\-–—]?\s*[\s\S]*?<\/(?:p|div|li|tr)>/gi, '')
     .replace(/<(?:h2|h3|strong|b)[^>]*>\s*(?:Reporting\s+Source|Source|स्रोत)\s*<\/(?:h2|h3|strong|b)>[\s\S]*?(?=<h2|<h3|$)/gi, '')
     .replace(/(?:Reporting\s+Source|Source|स्रोत)\s*[:\-–—]?\s*(?:SarkariResult|source page|official website|website)[^\n<]*/gi, '')
@@ -1310,9 +1323,39 @@ async function fetchReadablePageText(sourceUrl: string) {
   };
 }
 
+function schemaTypeMatchesJobPosting(value: unknown) {
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .map((item) => normalizeText(typeof item === 'string' ? item : ''))
+    .some((item) => item.toLowerCase() === 'jobposting');
+}
+
+function sanitizeSchemaMarkup(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => sanitizeSchemaMarkup(item))
+      .filter((item) => item !== undefined);
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (schemaTypeMatchesJobPosting(record['@type']) || schemaTypeMatchesJobPosting(record.type)) {
+    return undefined;
+  }
+
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(record)) {
+    const sanitized = sanitizeSchemaMarkup(nestedValue);
+    if (sanitized !== undefined) cleaned[key] = sanitized;
+  }
+  return cleaned;
+}
+
 function stringifySchemaMarkup(schemaMarkup: GeneratedBlogContent['schema_markup']) {
   try {
-    return JSON.stringify(schemaMarkup || {});
+    return JSON.stringify(sanitizeSchemaMarkup(schemaMarkup || {}) || {});
   } catch {
     return '{}';
   }
@@ -1473,6 +1516,13 @@ async function enqueueNotificationCampaign(env: Bindings, campaignId: string) {
   await env.NOTIFICATION_QUEUE.send({ campaignId } satisfies NotificationQueueMessage);
 }
 
+async function readNotificationCampaignById(db: D1Database, id: string) {
+  return db
+    .prepare('SELECT * FROM notification_campaigns WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<NotificationCampaignRow>();
+}
+
 async function createAutomaticNotificationCampaign(env: Bindings, article: ArticleRow, createdBy: string) {
   const existing = await env.ADMIN_DB
     .prepare("SELECT id FROM notification_campaigns WHERE article_id = ? AND source = 'auto' LIMIT 1")
@@ -1490,12 +1540,13 @@ async function createAutomaticNotificationCampaign(env: Bindings, article: Artic
     Number(settings.quiet_end_hour),
   );
   const recentAutoCount = await countRecentAutomaticCampaigns(env.ADMIN_DB);
-  const canAutoSend = Boolean(Number(settings.auto_send_enabled))
+  const withinAutoLimit = Boolean(Number(settings.auto_send_enabled))
     && recentAutoCount < Number(settings.max_auto_per_24h)
-    && Boolean(env.ONESIGNAL_REST_API_KEY)
-    && Boolean(env.NOTIFICATION_QUEUE);
-  const status = canAutoSend ? (quietTime ? 'scheduled' : 'queued') : 'ready';
-  const scheduledAt = canAutoSend && quietTime ? quietTime.toISOString() : null;
+    && Boolean(env.ONESIGNAL_APP_ID)
+    && Boolean(env.ONESIGNAL_REST_API_KEY);
+  const canQueueImmediate = withinAutoLimit && Boolean(env.NOTIFICATION_QUEUE);
+  const status = withinAutoLimit ? (quietTime ? 'scheduled' : canQueueImmediate ? 'queued' : 'ready') : 'ready';
+  const scheduledAt = withinAutoLimit && quietTime ? quietTime.toISOString() : null;
 
   await env.ADMIN_DB
     .prepare(
@@ -1529,6 +1580,9 @@ async function createAutomaticNotificationCampaign(env: Bindings, article: Artic
         .bind(error instanceof Error ? error.message : 'Queue enqueue failed', new Date().toISOString(), campaignId)
         .run();
     }
+  } else if (status === 'scheduled') {
+    const campaign = await readNotificationCampaignById(env.ADMIN_DB, campaignId);
+    if (campaign) await scheduleOneSignalCampaign(env, campaign);
   }
   return campaignId;
 }
@@ -1585,7 +1639,7 @@ async function verifyNotificationTestToken(secret: string, token: string) {
   }
 }
 
-async function sendOneSignalCampaign(env: Bindings, campaign: NotificationCampaignRow) {
+function buildOneSignalCampaignRequest(env: Bindings, campaign: NotificationCampaignRow, options: { sendAfter?: string | null } = {}) {
   if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_REST_API_KEY) {
     throw new Error('OneSignal App ID or REST API key is not configured');
   }
@@ -1620,6 +1674,15 @@ async function sendOneSignalCampaign(env: Bindings, campaign: NotificationCampai
   } else {
     requestBody.included_segments = ['Subscribed Users'];
   }
+  if (options.sendAfter) {
+    requestBody.send_after = options.sendAfter;
+  }
+
+  return requestBody;
+}
+
+async function sendOneSignalCampaign(env: Bindings, campaign: NotificationCampaignRow, options: { sendAfter?: string | null } = {}) {
+  const requestBody = buildOneSignalCampaignRequest(env, campaign, options);
 
   const response = await fetch('https://api.onesignal.com/notifications?c=push', {
     method: 'POST',
@@ -1640,6 +1703,52 @@ async function sendOneSignalCampaign(env: Bindings, campaign: NotificationCampai
     throw new Error(`OneSignal ${response.status}: ${responseText.slice(0, 1000)}`);
   }
   return { id: responseData.id, status: response.status, responseText };
+}
+
+async function scheduleOneSignalCampaign(env: Bindings, campaign: NotificationCampaignRow) {
+  if (!campaign.scheduled_at) {
+    throw new Error('Scheduled time is missing');
+  }
+  try {
+    const result = await sendOneSignalCampaign(env, campaign, { sendAfter: campaign.scheduled_at });
+    const now = new Date().toISOString();
+    const attemptId = crypto.randomUUID();
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare(
+        "UPDATE notification_campaigns SET status = 'scheduled', onesignal_notification_id = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+      ).bind(result.id, now, campaign.id),
+      env.ADMIN_DB.prepare(
+        "INSERT INTO notification_attempts (id, campaign_id, attempt_number, status, http_status, response_body, created_at) VALUES (?, ?, 1, 'scheduled', ?, ?, ?)",
+      ).bind(attemptId, campaign.id, result.status, result.responseText.slice(0, 4000), now),
+    ]);
+    return result;
+  } catch (error) {
+    await env.ADMIN_DB
+      .prepare("UPDATE notification_campaigns SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?")
+      .bind(error instanceof Error ? error.message.slice(0, 1000) : 'OneSignal schedule failed', new Date().toISOString(), campaign.id)
+      .run();
+    throw error;
+  }
+}
+
+async function cancelOneSignalCampaign(env: Bindings, campaign: NotificationCampaignRow) {
+  if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_REST_API_KEY) {
+    throw new Error('OneSignal App ID or REST API key is not configured');
+  }
+  if (!campaign.onesignal_notification_id) {
+    return;
+  }
+  const response = await fetch(
+    `https://api.onesignal.com/notifications/${encodeURIComponent(campaign.onesignal_notification_id)}?app_id=${encodeURIComponent(env.ONESIGNAL_APP_ID)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Key ${env.ONESIGNAL_REST_API_KEY}` },
+    },
+  );
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`OneSignal cancel ${response.status}: ${responseText.slice(0, 1000)}`);
+  }
 }
 
 async function processNotificationCampaign(env: Bindings, campaignId: string, attemptNumber: number) {
@@ -1693,21 +1802,27 @@ async function processNotificationCampaign(env: Bindings, campaignId: string, at
   }
 }
 
-async function enqueueDueNotificationCampaigns(env: Bindings) {
-  if (!env.NOTIFICATION_QUEUE) return;
-  const campaigns = await queryAll<{ id: string }>(
+async function markDueScheduledNotificationCampaigns(env: Bindings) {
+  const now = new Date().toISOString();
+  const campaigns = await queryAll<{ id: string; onesignal_notification_id: string | null }>(
     env.ADMIN_DB.prepare(
-      `SELECT id FROM notification_campaigns
+      `SELECT id, onesignal_notification_id FROM notification_campaigns
        WHERE status = 'scheduled' AND datetime(scheduled_at) <= datetime('now')
        ORDER BY datetime(scheduled_at) ASC LIMIT 20`,
     ),
   );
   for (const campaign of campaigns) {
-    await env.ADMIN_DB
-      .prepare("UPDATE notification_campaigns SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'scheduled'")
-      .bind(new Date().toISOString(), campaign.id)
-      .run();
-    await enqueueNotificationCampaign(env, campaign.id);
+    if (campaign.onesignal_notification_id) {
+      await env.ADMIN_DB
+        .prepare("UPDATE notification_campaigns SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'")
+        .bind(now, now, campaign.id)
+        .run();
+    } else {
+      await env.ADMIN_DB
+        .prepare("UPDATE notification_campaigns SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'")
+        .bind('Scheduled campaign was not registered with OneSignal', now, campaign.id)
+        .run();
+    }
   }
 }
 
@@ -2180,7 +2295,7 @@ async function readDashboardMetrics(db: D1Database): Promise<DashboardMetrics> {
 }
 
 function articleSelectColumns(contentExpression = 'articles.content', includeStatus = false) {
-  return `articles.id, articles.title, articles.slug, articles.excerpt, ${contentExpression} AS content, articles.category, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, ${includeStatus ? 'articles.status,' : ''} articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, authors.job_title AS author_job_title, articles.created_at, articles.updated_at`;
+  return `articles.id, articles.title, articles.slug, articles.excerpt, ${contentExpression} AS content, articles.category, articles.focus_keyword, articles.section_category_id, (SELECT name FROM categories WHERE id = articles.section_category_id LIMIT 1) AS section_category_name, (SELECT slug FROM categories WHERE id = articles.section_category_id LIMIT 1) AS section_category_slug, articles.seo_title, articles.seo_description, articles.featured_image_url, articles.featured_image_alt, articles.image_object_key, articles.canonical_url, articles.schema_markup, ${includeStatus ? 'articles.status,' : ''} articles.author_id, authors.name AS author_name, authors.slug AS author_slug, authors.bio AS author_bio, authors.image_url AS author_image_url, authors.job_title AS author_job_title, articles.created_at, articles.updated_at`;
 }
 
 async function readArticles(
@@ -2303,14 +2418,14 @@ async function readPublishedArticlesBySearch(db: D1Database, query: string) {
 
 async function readCategoryBySlug(db: D1Database, slug: string) {
   return db
-    .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE slug = ? LIMIT 1')
+    .prepare('SELECT id, name, slug, description, seo_title, seo_description, sort_order, created_at, updated_at FROM categories WHERE slug = ? LIMIT 1')
     .bind(slug)
     .first<CategoryRow>();
 }
 
 async function readCategoryByName(db: D1Database, name: string) {
   return db
-    .prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories WHERE name = ? LIMIT 1')
+    .prepare('SELECT id, name, slug, description, seo_title, seo_description, sort_order, created_at, updated_at FROM categories WHERE name = ? LIMIT 1')
     .bind(name)
     .first<CategoryRow>();
 }
@@ -2351,7 +2466,7 @@ async function readArticleCategoryCounts(db: D1Database) {
 
 async function readCategories(db: D1Database) {
   return queryAll<CategoryRow>(
-    db.prepare('SELECT id, name, slug, description, sort_order, created_at, updated_at FROM categories ORDER BY sort_order ASC, name ASC'),
+    db.prepare('SELECT id, name, slug, description, seo_title, seo_description, sort_order, created_at, updated_at FROM categories ORDER BY sort_order ASC, name ASC'),
   );
 }
 
@@ -2431,6 +2546,21 @@ async function resolveAuthorId(db: D1Database, requestedAuthorId: string) {
   return fallback?.id || 'default-author';
 }
 
+async function resolveSectionCategoryId(db: D1Database, requestedCategoryId: string, primaryCategory: string) {
+  const id = normalizeText(requestedCategoryId);
+  if (!id) {
+    return null;
+  }
+  const selected = await db
+    .prepare('SELECT id, name FROM categories WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<{ id: string; name: string }>();
+  if (!selected?.id || selected.name === primaryCategory) {
+    return null;
+  }
+  return selected.id;
+}
+
 function renderCategoryOptions(categories: CategoryRow[], selected = '') {
   const source = categories.length
     ? categories
@@ -2450,6 +2580,13 @@ function renderCategoryOptions(categories: CategoryRow[], selected = '') {
       return `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
     })
     .join('');
+}
+
+function renderCategoryIdOptions(categories: CategoryRow[], selected = '') {
+  const options = categories
+    .map((category) => `<option value="${escapeHtml(category.id)}"${category.id === selected ? ' selected' : ''}>${escapeHtml(category.name)}</option>`)
+    .join('');
+  return `<option value="">No secondary breadcrumb</option>${options}`;
 }
 
 function renderAuthorOptions(authors: AuthorRow[], selected = '') {
@@ -2663,7 +2800,7 @@ function publicStyles() {
     .home-slide { min-width: 100%; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr); gap: 18px; align-items: stretch; }
     .home-slide-copy { padding: 42px 42px 48px; display: grid; align-content: center; gap: 16px; min-height: 340px; }
     .latest-badge { width: fit-content; display: inline-flex; align-items: center; min-height: 30px; padding: 0 13px; border-radius: 8px; background: var(--red); color: #fff; font-size: 0.82rem; font-weight: 840; }
-    .home-slide h1 { font-size: clamp(1.9rem, 1.35rem + 1.8vw, 3.25rem); line-height: 1.16; font-weight: 850; overflow-wrap: anywhere; }
+    .home-slide h2 { font-size: clamp(1.9rem, 1.35rem + 1.8vw, 3.25rem); line-height: 1.16; font-weight: 850; overflow-wrap: anywhere; }
     .home-slide p { max-width: 650px; color: #364152; font-size: 1rem; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
     .hero-btn { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border-radius: 7px; padding: 0 16px; border: 1px solid var(--border); background: #fff; color: var(--ink); font-weight: 800; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.06); }
@@ -2722,6 +2859,7 @@ function publicStyles() {
     .article-author-copy { display: grid; gap: 2px; min-width: 0; }
     .article-author-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
     .article-author-name { font-size: 0.96rem; font-weight: 700; color: var(--text); }
+    .article-author-bio { max-width: 360px; color: var(--muted); font-size: 0.82rem; line-height: 1.45; }
     .article-facts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 0.88rem; }
     .article-facts span::after { content: "•"; margin-left: 10px; color: #c2c8d2; }
     .article-facts span:last-child::after { content: ""; margin: 0; }
@@ -2887,7 +3025,7 @@ function publicStyles() {
       .nav-more div { right: -44px; }
       .hero-actions { gap: 8px; }
       .hero-btn { width: auto; min-height: 38px; padding: 0 14px; }
-      .home-slide h1 { font-size: 1.55rem; line-height: 1.24; }
+      .home-slide h2 { font-size: 1.55rem; line-height: 1.24; }
       .home-slide p { font-size: 0.92rem; }
       .post-card-body { padding: 14px 14px 16px; }
       .post-card h2 { font-size: 1rem; line-height: 1.5; }
@@ -2975,6 +3113,7 @@ function categoryIconName(categoryName: string) {
 const PUBLIC_INFO_LINKS = [
   { href: '/about-us', label: 'हमारे बारे में' },
   { href: '/contact-us', label: 'संपर्क करें' },
+  { href: '/editorial-policy', label: 'Editorial Policy' },
   { href: '/privacy-policy', label: 'गोपनीयता नीति' },
 ];
 
@@ -3043,6 +3182,7 @@ function publicShell(title: string, description: string, content: string, headEx
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   <meta name="description" content="${escapeHtml(description)}" />
+  <meta name="robots" content="max-image-preview:large" />
   <meta property="og:site_name" content="${escapeHtml(PUBLIC_SITE_NAME)}" />
   <link rel="icon" type="image/png" sizes="64x64" href="${escapeHtml(PUBLIC_FAVICON_URL)}" />
   <link rel="apple-touch-icon" href="${escapeHtml(PUBLIC_APPLE_ICON_URL)}" />
@@ -3437,7 +3577,7 @@ function storedSchemaObjects(schemaMarkup: string | null | undefined) {
   }
 
   try {
-    const parsed = JSON.parse(schemaMarkup) as unknown;
+    const parsed = sanitizeSchemaMarkup(JSON.parse(schemaMarkup)) as unknown;
     const candidates = Array.isArray(parsed) ? parsed : Object.values(parsed as Record<string, unknown>);
     return candidates
       .map((item) => {
@@ -3450,6 +3590,44 @@ function storedSchemaObjects(schemaMarkup: string | null | undefined) {
   } catch {
     return [];
   }
+}
+
+function faqPageJsonLdFromContent(content: string) {
+  const faqs: Array<{ question: string; answer: string }> = [];
+
+  for (const match of content.matchAll(/<details\b[^>]*class=["'][^"']*\btarget-faq\b[^"']*["'][^>]*>\s*<summary\b[^>]*>[\s\S]*?<\/span>\s*([\s\S]*?)<\/summary>\s*<p\b[^>]*>([\s\S]*?)<\/p>\s*<\/details>/gi)) {
+    const question = normalizeText(stripHtml(match[1]));
+    const answer = normalizeText(stripHtml(match[2]));
+    if (question && answer) faqs.push({ question, answer });
+  }
+
+  if (!faqs.length) {
+    for (const match of content.matchAll(/<div\b[^>]*class=["'][^"']*\bfaq-item\b[^"']*["'][^>]*>[\s\S]*?<strong\b[^>]*>\s*(?:Q[:.]?\s*)?([\s\S]*?)<\/strong>\s*<p\b[^>]*>\s*(?:A[:.]?\s*)?([\s\S]*?)<\/p>[\s\S]*?<\/div>/gi)) {
+      const question = normalizeText(stripHtml(match[1]));
+      const answer = normalizeText(stripHtml(match[2]));
+      if (question && answer) faqs.push({ question, answer });
+    }
+  }
+
+  const uniqueFaqs = faqs
+    .filter((faq, index, source) => source.findIndex((item) => item.question === faq.question) === index)
+    .slice(0, 5);
+  if (!uniqueFaqs.length) {
+    return null;
+  }
+
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: uniqueFaqs.map((faq) => ({
+      '@type': 'Question',
+      name: faq.question,
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: faq.answer,
+      },
+    })),
+  };
 }
 
 function organizationJsonLd() {
@@ -3585,44 +3763,27 @@ function articleImageObjects(article: PublicArticleRow | ArticleRow) {
   return images;
 }
 
-function jobPostingJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string) {
-  if (!isVacancyArticle(article.category, article.title)) {
-    return null;
-  }
-
-  const description = limitTextWords(article.seo_description || article.excerpt || stripHtml(article.content || ''), 120) || `Latest job update for ${article.title}.`;
-  return {
-    '@context': 'https://schema.org',
-    '@type': 'JobPosting',
-    title: article.title,
-    description,
-    datePosted: (article.created_at || article.updated_at || '').slice(0, 10) || undefined,
-    hiringOrganization: {
-      '@type': 'Organization',
-      name: article.category || 'Official recruiting organization',
-      sameAs: canonicalUrl,
-    },
-    applicantLocationRequirements: {
-      '@type': 'Country',
-      name: 'India',
-    },
-    mainEntityOfPage: canonicalUrl,
-    url: canonicalUrl,
-  };
-}
-
 function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string, images: Array<Record<string, unknown>>) {
   const authorSlug = article.author_slug || slugify(article.author_name || 'samoon-digital') || 'samoon-digital';
+  const text = stripHtml(article.content || '');
   return {
     '@context': 'https://schema.org',
     '@type': 'NewsArticle',
+    '@id': `${canonicalUrl}#newsarticle`,
     headline: article.seo_title || article.title,
     description: article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
     image: images.length ? images : (article.featured_image_url ? [article.featured_image_url] : undefined),
+    primaryImageOfPage: images[0] || undefined,
     datePublished: article.created_at,
     dateModified: article.updated_at,
+    inLanguage: 'hi-IN',
+    articleSection: article.section_category_name || article.category || undefined,
+    keywords: article.focus_keyword || undefined,
+    wordCount: text ? text.split(/\s+/).filter(Boolean).length : undefined,
+    isAccessibleForFree: true,
     author: {
       '@type': 'Person',
+      '@id': `${publicAuthorUrl(authorSlug)}#person`,
       name: article.author_name || 'Samoon Digital',
       url: publicAuthorUrl(authorSlug),
       image: article.author_image_url || undefined,
@@ -3636,11 +3797,31 @@ function articleJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: str
     publisher: organizationJsonLd(),
     mainEntityOfPage: {
       '@type': 'WebPage',
-      '@id': canonicalUrl,
+      '@id': `${canonicalUrl}#webpage`,
     },
     speakable: {
       '@type': 'SpeakableSpecification',
       cssSelector: ['.article-head h1', '.article-head .dek', '.content p:first-of-type'],
+    },
+  };
+}
+
+function articleWebPageJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: string, images: Array<Record<string, unknown>>) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    '@id': `${canonicalUrl}#webpage`,
+    url: canonicalUrl,
+    name: article.seo_title || article.title,
+    description: article.seo_description || article.excerpt || `Read ${article.title} on Hindiline.`,
+    inLanguage: 'hi-IN',
+    isPartOf: websiteJsonLd(),
+    primaryImageOfPage: images[0] || undefined,
+    breadcrumb: {
+      '@id': `${canonicalUrl}#breadcrumb`,
+    },
+    mainEntity: {
+      '@id': `${canonicalUrl}#newsarticle`,
     },
   };
 }
@@ -3664,6 +3845,15 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
     });
   }
 
+  if (article.section_category_name && article.section_category_slug && article.section_category_name !== article.category) {
+    items.push({
+      '@type': 'ListItem',
+      position: items.length + 1,
+      name: article.section_category_name,
+      item: publicCategoryUrl(article.section_category_slug),
+    });
+  }
+
   items.push({
     '@type': 'ListItem',
     position: items.length + 1,
@@ -3674,6 +3864,7 @@ function breadcrumbJsonLd(article: PublicArticleRow | ArticleRow, canonicalUrl: 
   return {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
+    '@id': `${canonicalUrl}#breadcrumb`,
     itemListElement: items,
   };
 }
@@ -3685,11 +3876,12 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
   const articleVideoUrl = extractArticleVideoUrl(article.content || '');
   const videoSchema = videoObjectJsonLd(article, canonicalUrl, articleVideoUrl);
   const imageSchemas = articleImageObjects(article);
-  const jobSchema = jobPostingJsonLd(article, canonicalUrl);
+  const visibleFaqSchema = faqPageJsonLdFromContent(article.content || '');
   const imagePreload = image
     ? `<link rel="preload" as="image" href="${escapeHtml(optimizedImageUrl(image, 960))}" imagesrcset="${escapeHtml(featuredImageSrcset(image))}" imagesizes="(max-width: 780px) calc(100vw - 24px), 760px" fetchpriority="high" />`
     : '';
   const schemaObjects = [
+    articleWebPageJsonLd(article, canonicalUrl, imageSchemas),
     articleJsonLd(article, canonicalUrl, imageSchemas),
     breadcrumbJsonLd(article, canonicalUrl, categorySlug),
     ...(article.author_name
@@ -3702,9 +3894,8 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
       })]
       : []),
     ...imageSchemas,
-    ...(jobSchema ? [jobSchema] : []),
     ...(videoSchema ? [videoSchema] : []),
-    ...storedSchemaObjects(article.schema_markup),
+    ...(visibleFaqSchema ? [visibleFaqSchema] : storedSchemaObjects(article.schema_markup)),
   ];
 
   return `
@@ -3766,7 +3957,7 @@ function renderHomeSlide(article: PublicArticleRow, index: number) {
   return `<article class="home-slide">
     <div class="home-slide-copy">
       <span class="latest-badge">लेटेस्ट अपडेट</span>
-      <h1>${escapeHtml(article.title)}</h1>
+      <h2>${escapeHtml(article.title)}</h2>
       <p>${escapeHtml(summary)}</p>
       <div class="hero-actions">
         <a class="hero-btn primary" href="/${escapeHtml(article.slug)}">पूरी जानकारी पढ़ें<span class="sr-only">: ${escapeHtml(article.title)}</span> ${renderPublicIcon('arrow')}</a>
@@ -3884,7 +4075,7 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
   return publicShell(
     HOMEPAGE_SEO_TITLE,
     HOMEPAGE_META_DESCRIPTION,
-    `${trending}${spotlight}${recent}${empty}`,
+    `<h1 class="sr-only">हिंदीलाइन सरकारी नौकरी भर्ती एडमिट कार्ड रिजल्ट अपडेट</h1>${trending}${spotlight}${recent}${empty}`,
     `<link rel="canonical" href="${escapeHtml(PUBLIC_SITE_ORIGIN)}" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="${escapeHtml(HOMEPAGE_SEO_TITLE)}" />
@@ -3895,12 +4086,39 @@ function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[])
   );
 }
 
-function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: CategoryRow[]) {
+function infoPageBreadcrumbJsonLd(title: string, url: string) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: PUBLIC_SITE_ORIGIN },
+      { '@type': 'ListItem', position: 2, name: title, item: url },
+    ],
+  };
+}
+
+function infoPageJsonLd(page: { title: string; description: string; heading: string; url: string; schemaType: string }) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': page.schemaType,
+    name: page.title,
+    headline: page.heading,
+    description: page.description,
+    url: page.url,
+    inLanguage: 'hi-IN',
+    isPartOf: websiteJsonLd(),
+    publisher: organizationJsonLd(),
+  };
+}
+
+function publicInfoPage(kind: 'about' | 'contact' | 'privacy' | 'editorial', categories: CategoryRow[]) {
   const pages = {
     about: {
       title: 'हमारे बारे में - हिंदीलाइन',
       description: 'हिंदीलाइन के बारे में जानें: सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं की उपयोगी जानकारी।',
       heading: 'हमारे बारे में',
+      path: '/about-us',
+      schemaType: 'AboutPage',
       body: `<p>हिंदीलाइन एक हिंदी समाचार और जानकारी वेबसाइट है, जहां सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश, परीक्षा अपडेट और सरकारी योजनाओं से जुड़ी महत्वपूर्ण जानकारी सरल भाषा में प्रकाशित की जाती है।</p>
       <p>हमारा उद्देश्य पाठकों तक उपयोगी अपडेट साफ, भरोसेमंद और समझने योग्य रूप में पहुंचाना है, ताकि वे पात्रता, तारीख, आवेदन प्रक्रिया, शुल्क, चयन प्रक्रिया और आधिकारिक लिंक जैसी जरूरी बातें जल्दी समझ सकें।</p>
       <p>हिंदीलाइन पर प्रकाशित जानकारी तैयार करते समय आधिकारिक नोटिफिकेशन, विभागीय अपडेट और विश्वसनीय स्रोतों को प्राथमिकता दी जाती है। किसी भी आवेदन या निर्णय से पहले पाठकों को संबंधित आधिकारिक वेबसाइट पर जानकारी जरूर सत्यापित करनी चाहिए।</p>`,
@@ -3909,8 +4127,10 @@ function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: Categ
       title: 'संपर्क करें - हिंदीलाइन',
       description: 'हिंदीलाइन टीम से संपर्क करने के लिए ईमेल, कंपनी और पते की जानकारी देखें।',
       heading: 'संपर्क करें',
+      path: '/contact-us',
+      schemaType: 'ContactPage',
       body: `<p>समाचार, सुधार, सुझाव, विज्ञापन या किसी अन्य जरूरी जानकारी के लिए आप हिंदीलाइन टीम से ईमेल के माध्यम से संपर्क कर सकते हैं।</p>
-      <p><strong>ईमेल:</strong> <a href="mailto:samoondital@gmail.com">samoondital@gmail.com</a></p>
+      <p><strong>ईमेल:</strong> <a href="mailto:samoondigital@gmail.com">samoondigital@gmail.com</a></p>
       <p><strong>कंपनी:</strong> Samoon Digital Private Limited</p>
       <p><strong>पता:</strong> Vill Gadaniya Post Trikoliya Palia Kalan Kheri Uttar Pradesh 262902</p>
       <p>हम आमतौर पर जरूरी संदेशों का जवाब उपलब्धता और प्राथमिकता के आधार पर देते हैं। कृपया ईमेल में विषय स्पष्ट लिखें, ताकि आपकी बात सही टीम तक जल्दी पहुंच सके।</p>`,
@@ -3919,6 +4139,8 @@ function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: Categ
       title: 'गोपनीयता नीति - हिंदीलाइन',
       description: 'हिंदीलाइन गोपनीयता नीति: डेटा, कुकीज, एनालिटिक्स, संपर्क जानकारी और तृतीय-पक्ष सेवाओं के उपयोग की जानकारी।',
       heading: 'गोपनीयता नीति',
+      path: '/privacy-policy',
+      schemaType: 'WebPage',
       body: `<p>हिंदीलाइन पर पाठकों की गोपनीयता हमारे लिए महत्वपूर्ण है। यह नीति बताती है कि वेबसाइट उपयोग के दौरान कौन-सी सामान्य जानकारी प्राप्त हो सकती है और उसका उपयोग कैसे किया जाता है।</p>
       <p>हम वेबसाइट प्रदर्शन, सुरक्षा, पाठक अनुभव और सामग्री सुधार के लिए सामान्य एनालिटिक्स डेटा जैसे पेज व्यू, डिवाइस प्रकार, ब्राउजर, अनुमानित लोकेशन और रेफरल जानकारी का उपयोग कर सकते हैं।</p>
       <p>व्यक्तिगत जानकारी हमें तभी मिलती है जब पाठक स्वयं ईमेल या किसी सीधे संपर्क माध्यम से जानकारी साझा करते हैं। ऐसी जानकारी का उपयोग केवल संवाद, सुधार, शिकायत समाधान या वैध व्यावसायिक उद्देश्य के लिए किया जाता है।</p>
@@ -3926,13 +4148,30 @@ function publicInfoPage(kind: 'about' | 'contact' | 'privacy', categories: Categ
       <p>हिंदीलाइन बाहरी वेबसाइटों के लिंक दे सकता है। उन वेबसाइटों की सामग्री, सुरक्षा और गोपनीयता नीतियों के लिए संबंधित वेबसाइट स्वयं जिम्मेदार होती है।</p>
       <p>इस नीति में समय-समय पर बदलाव हो सकते हैं। अपडेट होने पर नई नीति इसी पेज पर उपलब्ध कराई जाएगी।</p>`,
     },
+    editorial: {
+      title: 'Editorial Policy - हिंदीलाइन',
+      description: 'हिंदीलाइन की editorial policy: sources, corrections, AI-assisted content process और reader-first publishing standards।',
+      heading: 'Editorial Policy',
+      path: '/editorial-policy',
+      schemaType: 'WebPage',
+      body: `<p>हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं से जुड़े अपडेट reader-first approach के साथ प्रकाशित किए जाते हैं।</p>
+      <h2>Sources और Verification</h2>
+      <p>हम official notification, विभागीय वेबसाइट, परीक्षा पोर्टल और भरोसेमंद public information को प्राथमिकता देते हैं। किसी आवेदन, फीस, तारीख या eligibility decision से पहले पाठकों को official website पर जानकारी जरूर verify करनी चाहिए।</p>
+      <h2>AI-Assisted Workflow</h2>
+      <p>Content drafting, summarisation, formatting और SEO checks में AI tools की मदद ली जा सकती है, लेकिन publish करने से पहले article को Hindiline editorial workflow में review किया जाता है।</p>
+      <h2>Corrections</h2>
+      <p>अगर किसी article में सुधार की जरूरत हो तो पाठक <a href="mailto:samoondigital@gmail.com">samoondigital@gmail.com</a> पर details भेज सकते हैं। जरूरी corrections priority के आधार पर update किए जाते हैं।</p>`,
+    },
   }[kind];
+  const pageUrl = `${PUBLIC_SITE_ORIGIN}${pages.path}`;
 
   return publicShell(
     pages.title,
     pages.description,
     `<section class="article"><div class="wrap"><div class="article-head"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>${escapeHtml(pages.heading)}</span></nav><h1>${escapeHtml(pages.heading)}</h1></div><div class="content">${pages.body}</div></div></section>`,
-    '',
+    `<link rel="canonical" href="${escapeHtml(pageUrl)}" />
+  ${jsonLdScript(infoPageJsonLd({ ...pages, url: pageUrl }))}
+  ${jsonLdScript(infoPageBreadcrumbJsonLd(pages.heading, pageUrl))}`,
     { categories },
   );
 }
@@ -3943,6 +4182,40 @@ function articleCardsList(articles: PublicArticleRow[]) {
       .map((article, index) => renderPublicPostCard(article, { eager: index < 2 }))
       .join('')}</div></section>`
     : `<section class="wrap empty">Is section me abhi published article nahi hai.</section>`;
+}
+
+function collectionPageJsonLd(title: string, description: string, url: string, articles: PublicArticleRow[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: title,
+    description,
+    url,
+    inLanguage: 'hi-IN',
+    isPartOf: websiteJsonLd(),
+    mainEntity: {
+      '@type': 'ItemList',
+      itemListElement: articles.map((article, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: publicArticleUrl(article.slug),
+        name: article.title,
+      })),
+    },
+  };
+}
+
+function simpleBreadcrumbJsonLd(items: Array<{ name: string; url: string }>) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items.map((item, index) => ({
+      '@type': 'ListItem',
+      position: index + 1,
+      name: item.name,
+      item: item.url,
+    })),
+  };
 }
 
 function renderLazyArticleListing(articles: PublicArticleRow[], hasMore: boolean, categorySlug = '') {
@@ -4040,6 +4313,7 @@ function renderLazyArticleListing(articles: PublicArticleRow[], hasMore: boolean
 function publicArticlesPage(articles: PublicArticleRow[], categories: CategoryRow[], hasMore: boolean) {
   const title = 'सभी लेख - हिंदीलाइन';
   const description = 'हिंदीलाइन पर सरकारी नौकरी, भर्ती, एडमिट कार्ड, रिजल्ट, प्रवेश और सरकारी योजनाओं से जुड़े सभी ताजा लेख पढ़ें।';
+  const pageUrl = `${PUBLIC_SITE_ORIGIN}/articles`;
   const content = `<section class="hero">
     <div class="wrap">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>सभी लेख</span></nav>
@@ -4053,7 +4327,12 @@ function publicArticlesPage(articles: PublicArticleRow[], categories: CategoryRo
     title,
     description,
     content,
-    `<link rel="canonical" href="${escapeHtml(`${PUBLIC_SITE_ORIGIN}/articles`)}" />`,
+    `<link rel="canonical" href="${escapeHtml(pageUrl)}" />
+  ${jsonLdScript(collectionPageJsonLd(title, description, pageUrl, articles))}
+  ${jsonLdScript(simpleBreadcrumbJsonLd([
+      { name: 'Home', url: PUBLIC_SITE_ORIGIN },
+      { name: 'सभी लेख', url: pageUrl },
+    ]))}`,
     { categories },
   );
 }
@@ -4069,7 +4348,8 @@ function publicSearchPage(query: string, articles: PublicArticleRow[], categorie
     title,
     description,
     `<section class="hero"><div class="wrap"><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a><span>/</span><span>Search</span></nav><h1>Search</h1><form class="filter-bar" method="get" action="/search"><input name="q" value="${escapeHtml(query)}" placeholder="Search Hindiline" /><button class="hero-btn primary" type="submit">Search ${renderPublicIcon('search')}</button></form></div></section>${results}`,
-    `<link rel="canonical" href="${escapeHtml(`${PUBLIC_SITE_ORIGIN}/search${query ? `?q=${encodeURIComponent(query)}` : ''}`)}" />`,
+    `<link rel="canonical" href="${escapeHtml(`${PUBLIC_SITE_ORIGIN}/search${query ? `?q=${encodeURIComponent(query)}` : ''}`)}" />
+  <meta name="robots" content="noindex,follow,max-image-preview:large" />`,
     { categories },
   );
 }
@@ -4088,12 +4368,18 @@ function isRailwayCategory(category: CategoryRow) {
 }
 
 function categorySeoTitle(category: CategoryRow) {
+  if (category.seo_title) {
+    return category.seo_title;
+  }
   return isJobsCategory(category)
     ? JOBS_CATEGORY_SEO_TITLE
     : `${category.name} Articles - Hindiline`;
 }
 
 function categorySeoDescription(category: CategoryRow) {
+  if (category.seo_description) {
+    return category.seo_description;
+  }
   return isRailwayCategory(category)
     ? RAILWAY_CATEGORY_DESCRIPTION
     : isJobsCategory(category)
@@ -4108,6 +4394,8 @@ function categoryPageJsonLd(category: CategoryRow, articles: PublicArticleRow[])
     name: categorySeoTitle(category),
     description: categorySeoDescription(category),
     url: publicCategoryUrl(category.slug),
+    inLanguage: 'hi-IN',
+    isPartOf: websiteJsonLd(),
     mainEntity: {
       '@type': 'ItemList',
       itemListElement: articles.map((article, index) => ({
@@ -4274,6 +4562,7 @@ function buildPageSitemapXml(articles: SitemapArticleRow[], categories: Category
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/articles`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/about-us`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/contact-us`, lastmod),
+    sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/editorial-policy`, lastmod),
     sitemapUrlEntry(`${PUBLIC_SITE_ORIGIN}/privacy-policy`, lastmod),
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -4299,7 +4588,12 @@ ${sitemapUrls.map((loc) => `  <sitemap>
 }
 
 function buildNewsSitemapXml(articles: SitemapArticleRow[]) {
-  const entries = articles.map((article) => `  <url>
+  const cutoffMs = Date.now() - 48 * 60 * 60 * 1000;
+  const recentArticles = articles.filter((article) => {
+    const publishedMs = article.created_at ? new Date(article.created_at).getTime() : 0;
+    return Number.isFinite(publishedMs) && publishedMs >= cutoffMs;
+  });
+  const entries = recentArticles.map((article) => `  <url>
     <loc>${escapeXml(canonicalSitemapArticleUrl(article))}</loc>
     <news:news>
       <news:publication>
@@ -4424,6 +4718,7 @@ function xmlResponse(xml: string) {
 function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categories: CategoryRow[]) {
   const title = `${author.name} - Author at Hindiline`;
   const description = author.bio || `${author.name} ke latest articles aur updates Hindiline par padhein.`;
+  const authorUrl = publicAuthorUrl(author.slug);
   const image = author.image_url
     ? `<img src="${escapeHtml(optimizedImageUrl(author.image_url, 240, 72))}" width="168" height="168" alt="${escapeHtml(author.name)}" loading="eager" decoding="async" />`
     : '<div></div>';
@@ -4440,15 +4735,20 @@ function publicAuthorPage(author: AuthorRow, articles: PublicArticleRow[], categ
         </div>
       </header>
     </section>${articleCardsList(articles)}`,
-    `<link rel="canonical" href="${escapeHtml(publicAuthorUrl(author.slug))}" />
+    `<link rel="canonical" href="${escapeHtml(authorUrl)}" />
   ${jsonLdScript(personJsonLd(author))}
   ${jsonLdScript({
       '@context': 'https://schema.org',
       '@type': 'ProfilePage',
       name: title,
-      url: publicAuthorUrl(author.slug),
+      url: authorUrl,
       mainEntity: personJsonLd(author),
-    })}`,
+    })}
+  ${jsonLdScript(simpleBreadcrumbJsonLd([
+      { name: 'Home', url: PUBLIC_SITE_ORIGIN },
+      { name: 'Author', url: `${PUBLIC_SITE_ORIGIN}/author/${encodeURIComponent(author.slug)}` },
+      { name: author.name, url: authorUrl },
+    ]))}`,
     { categories },
   );
 }
@@ -4465,7 +4765,7 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
     ? `<img class="featured" src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 960))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 780px) calc(100vw - 24px), 760px" width="1080" height="608" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="eager" fetchpriority="high" decoding="async" />`
     : '';
   const breadcrumbTrail = article.category
-    ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(categorySlug || slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a><span>/</span><span>${escapeHtml(article.title)}</span>`
+    ? `<a href="/">Home</a><span>/</span><a href="/category/${escapeHtml(categorySlug || slugify(article.category) || article.category)}">${escapeHtml(article.category)}</a>${article.section_category_name && article.section_category_slug && article.section_category_name !== article.category ? `<span>/</span><a href="/category/${escapeHtml(article.section_category_slug)}">${escapeHtml(article.section_category_name)}</a>` : ''}<span>/</span><span>${escapeHtml(article.title)}</span>`
     : `<a href="/">Home</a><span>/</span><span>${escapeHtml(article.title)}</span>`;
   const authorName = article.author_name || 'Hindiline';
   const authorUrl = `/author/${escapeHtml(article.author_slug || slugify(authorName) || 'samoon-digital')}`;
@@ -4498,6 +4798,8 @@ function publicArticlePage(article: PublicArticleRow | ArticleRow, options: { pr
           <div class="article-author-copy">
             <span class="article-author-label">Author</span>
             <a class="article-author-name" href="${authorUrl}">${escapeHtml(authorName)}</a>
+            ${article.author_job_title ? `<span class="article-author-label">${escapeHtml(article.author_job_title)}</span>` : ''}
+            ${article.author_bio ? `<span class="article-author-bio">${escapeHtml(limitTextWords(article.author_bio, 18))}</span>` : ''}
           </div>
         </div>
         <div class="article-facts">
@@ -4675,6 +4977,10 @@ async function handlePublicSite(c: Context<{ Bindings: Bindings }>) {
 
   if (url.pathname === '/contact-us' || url.pathname === '/contact') {
     return cachePublicPage(c, url, c.html(publicInfoPage('contact', categories)));
+  }
+
+  if (url.pathname === '/editorial-policy') {
+    return cachePublicPage(c, url, c.html(publicInfoPage('editorial', categories)));
   }
 
   if (url.pathname === '/privacy-policy' || url.pathname === '/privacy') {
@@ -5370,6 +5676,7 @@ function articlesManagementPage(
               <div class="article-actions">
                 ${a.status === 'published'
             ? `<a class="btn btn-secondary" href="https://hindiline.com/${escapeHtml(a.slug)}" target="_blank" rel="noopener">Live</a>
+                   <button class="btn btn-secondary" type="button" onclick="openNotifyModal('${escapeHtml(a.id)}',this)">Notify</button>
                    <button class="btn btn-ghost" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','draft',this)">Draft</button>`
             : `<a class="btn btn-secondary" href="/articles/${escapeHtml(a.id)}/preview" target="_blank" rel="noopener">Preview</a>
                    <button class="btn btn-primary" type="button" onclick="updateArticleStatus('${escapeHtml(a.id)}','published',this)">Publish</button>`}
@@ -5435,7 +5742,214 @@ function articlesManagementPage(
           </div>
         </div>
       </div>
+      <style>
+        .notify-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(12, 18, 28, 0.46); }
+        .notify-modal[hidden] { display: none; }
+        .notify-dialog { width: min(720px, 100%); max-height: calc(100vh - 36px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 24px 80px rgba(12, 18, 28, 0.28); }
+        .notify-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+        .notify-dialog-header h2 { font-size: 1.05rem; }
+        .notify-dialog-body { padding: 20px; }
+        .notify-close { border: 1px solid var(--border); background: #fff; border-radius: 7px; width: 34px; height: 34px; cursor: pointer; font-size: 1.2rem; line-height: 1; }
+        .notify-preview { display: flex; gap: 12px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #fafafa; }
+        .notify-preview img { width: 128px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 7px; border: 1px solid var(--border); background: #fff; }
+        .notify-preview img[hidden] { display: none; }
+      </style>
+      <div class="notify-modal" id="notify-modal" hidden>
+        <div class="notify-dialog" role="dialog" aria-modal="true" aria-labelledby="notify-title">
+          <div class="notify-dialog-header">
+            <div>
+              <h2 id="notify-title">Send article notification</h2>
+              <div class="meta" id="notify-subtitle">Published article push campaign</div>
+            </div>
+            <button class="notify-close" type="button" id="notify-close" aria-label="Close notification modal">&times;</button>
+          </div>
+          <div class="notify-dialog-body">
+            <form class="form" id="notify-form">
+              <div class="cols-2">
+                <div class="field">
+                  <label for="notify-audience">Audience</label>
+                  <select id="notify-audience">
+                    <option value="all">All subscribers</option>
+                    <option value="category" id="notify-category-option">Category subscribers</option>
+                    <option value="test" id="notify-test-option">Test device only</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="notify-schedule">Schedule (optional)</label>
+                  <input id="notify-schedule" type="datetime-local" />
+                </div>
+              </div>
+              <div class="field" id="notify-test-field" hidden>
+                <label for="notify-test-device">Test device</label>
+                <select id="notify-test-device"></select>
+              </div>
+              <div class="field"><label for="notify-field-title">Notification title</label><input id="notify-field-title" maxlength="80" required /></div>
+              <div class="field"><label for="notify-field-body">Notification body</label><textarea id="notify-field-body" maxlength="120" required></textarea></div>
+              <div class="cols-2">
+                <div class="field"><label for="notify-field-image">Featured image URL</label><input id="notify-field-image" type="url" /></div>
+                <div class="field"><label for="notify-field-url">Article URL</label><input id="notify-field-url" type="url" required /></div>
+              </div>
+              <div class="notify-preview">
+                <img id="notify-preview-image" alt="" hidden />
+                <div><strong id="notify-preview-title"></strong><p id="notify-preview-body" style="margin-top:5px;color:var(--text-muted);line-height:1.5;"></p></div>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <button class="btn btn-primary" type="submit" id="notify-submit">Create notification</button>
+                <button class="btn btn-secondary" type="button" id="notify-cancel">Cancel</button>
+              </div>
+              <div class="notice" id="notify-notice"></div>
+            </form>
+          </div>
+        </div>
+      </div>
       <script>
+        let activeNotifyDraft = null;
+        let activeNotifyMaxDays = 30;
+
+        const notifyModal = document.getElementById('notify-modal');
+        const notifyForm = document.getElementById('notify-form');
+        const notifyAudience = document.getElementById('notify-audience');
+        const notifyCategoryOption = document.getElementById('notify-category-option');
+        const notifyTestOption = document.getElementById('notify-test-option');
+        const notifyTestField = document.getElementById('notify-test-field');
+        const notifyTestDevice = document.getElementById('notify-test-device');
+        const notifySchedule = document.getElementById('notify-schedule');
+        const notifyNotice = document.getElementById('notify-notice');
+        const notifySubmit = document.getElementById('notify-submit');
+
+        function toDatetimeLocal(date) {
+          const pad = (value) => String(value).padStart(2, '0');
+          return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+        }
+
+        function setNotifyNotice(message, tone) {
+          notifyNotice.textContent = message || '';
+          notifyNotice.className = 'notice' + (tone ? ' ' + tone : '');
+        }
+
+        function syncNotifyPreview() {
+          document.getElementById('notify-preview-title').textContent = document.getElementById('notify-field-title').value;
+          document.getElementById('notify-preview-body').textContent = document.getElementById('notify-field-body').value;
+          const image = document.getElementById('notify-preview-image');
+          image.src = document.getElementById('notify-field-image').value;
+          image.hidden = !image.src;
+        }
+
+        function syncNotifyAudience() {
+          notifyTestField.hidden = notifyAudience.value !== 'test';
+        }
+
+        function closeNotifyModal() {
+          notifyModal.hidden = true;
+          document.body.style.overflow = '';
+          activeNotifyDraft = null;
+        }
+
+        async function openNotifyModal(id, btn) {
+          const originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = 'Loading...';
+          try {
+            const res = await fetch('/api/articles/' + id + '/notification-draft');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Notification draft failed');
+            activeNotifyDraft = data.article;
+            activeNotifyMaxDays = Number(data.maxScheduleDays || 30);
+            document.getElementById('notify-field-title').value = activeNotifyDraft.title;
+            document.getElementById('notify-field-body').value = activeNotifyDraft.body;
+            document.getElementById('notify-field-image').value = activeNotifyDraft.imageUrl;
+            document.getElementById('notify-field-url').value = activeNotifyDraft.targetUrl;
+            document.getElementById('notify-subtitle').textContent = activeNotifyDraft.categoryName || 'All subscribers';
+            notifyCategoryOption.disabled = !activeNotifyDraft.categorySlug;
+            notifyCategoryOption.textContent = activeNotifyDraft.categorySlug
+              ? 'Category subscribers (' + activeNotifyDraft.categoryName + ')'
+              : 'Category subscribers (no category tag)';
+            notifyTestDevice.replaceChildren();
+            (data.testDevices || []).forEach((device) => {
+              const option = document.createElement('option');
+              option.value = device.subscriptionId;
+              option.textContent = device.label;
+              notifyTestDevice.appendChild(option);
+            });
+            notifyTestOption.disabled = !data.testDevices || !data.testDevices.length;
+            notifyAudience.value = 'all';
+            notifySchedule.value = '';
+            notifySchedule.min = toDatetimeLocal(new Date(Date.now() + 60 * 1000));
+            notifySchedule.max = toDatetimeLocal(new Date(Date.now() + activeNotifyMaxDays * 24 * 60 * 60 * 1000));
+            syncNotifyAudience();
+            syncNotifyPreview();
+            setNotifyNotice('', '');
+            notifyModal.hidden = false;
+            document.body.style.overflow = 'hidden';
+            document.getElementById('notify-field-title').focus();
+          } catch (err) {
+            alert(err.message || 'Notification draft failed');
+          } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        }
+
+        document.getElementById('notify-close').addEventListener('click', closeNotifyModal);
+        document.getElementById('notify-cancel').addEventListener('click', closeNotifyModal);
+        notifyModal.addEventListener('click', (event) => {
+          if (event.target === notifyModal) closeNotifyModal();
+        });
+        notifyAudience.addEventListener('change', syncNotifyAudience);
+        ['notify-field-title','notify-field-body','notify-field-image'].forEach((id) => {
+          document.getElementById(id).addEventListener('input', syncNotifyPreview);
+        });
+        notifyForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!activeNotifyDraft) return;
+          const audienceType = notifyAudience.value;
+          const audienceValue = audienceType === 'category'
+            ? activeNotifyDraft.categorySlug
+            : audienceType === 'test'
+              ? notifyTestDevice.value
+              : '';
+          const scheduleValue = notifySchedule.value;
+          if (scheduleValue) {
+            const scheduledTime = new Date(scheduleValue).getTime();
+            if (!scheduledTime || scheduledTime <= Date.now()) {
+              return setNotifyNotice('Schedule future time ke liye set karein.', 'error');
+            }
+            if (scheduledTime > Date.now() + activeNotifyMaxDays * 24 * 60 * 60 * 1000) {
+              return setNotifyNotice('Schedule ' + activeNotifyMaxDays + ' din ke andar set karein.', 'error');
+            }
+          } else if (audienceType !== 'test' && !confirm('Yeh notification abhi bheji jayegi. Send karein?')) {
+            return;
+          }
+          notifySubmit.disabled = true;
+          notifySubmit.textContent = scheduleValue ? 'Scheduling...' : 'Queueing...';
+          setNotifyNotice('', '');
+          try {
+            const response = await fetch('/api/notifications/campaigns', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                articleId: activeNotifyDraft.id,
+                audienceType,
+                audienceValue,
+                title: document.getElementById('notify-field-title').value,
+                body: document.getElementById('notify-field-body').value,
+                imageUrl: document.getElementById('notify-field-image').value,
+                targetUrl: document.getElementById('notify-field-url').value,
+                scheduledAt: scheduleValue ? new Date(scheduleValue).toISOString() : '',
+              }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Campaign failed');
+            notifyNotice.innerHTML = 'Notification ' + (data.status === 'scheduled' ? 'scheduled' : 'created') + '. <a href="/notifications">View history</a>';
+            notifyNotice.className = 'notice ok';
+          } catch (err) {
+            setNotifyNotice(err.message || 'Campaign failed', 'error');
+          } finally {
+            notifySubmit.disabled = false;
+            notifySubmit.textContent = 'Create notification';
+          }
+        });
+
         async function updateArticleStatus(id, status, btn) {
           const originalText = btn.textContent;
           btn.disabled = true;
@@ -5707,7 +6221,7 @@ function aiGenerationPage(user: SessionUser, categories: CategoryRow[], authors:
                 authorId: document.getElementById('author-id').value,
                 includeFaqs: targetedMode ? true : document.querySelector('input[name="include-faqs"]:checked').value === 'on',
                 includeToc: targetedMode ? false : document.querySelector('input[name="include-toc"]:checked').value === 'on',
-                includeInternalLinks: targetedMode ? false : document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
+                includeInternalLinks: targetedMode ? true : document.querySelector('input[name="include-internal-links"]:checked').value === 'on',
                 includeExternalLinks: targetedMode ? false : document.querySelector('input[name="include-external-links"]:checked').value === 'on',
                 includeTables: targetedMode ? false : document.querySelector('input[name="include-tables"]:checked').value === 'on',
                 useTrainingTitleStyle: targetedMode ? true : document.querySelector('input[name="use-training-title-style"]:checked').value === 'on',
@@ -5769,6 +6283,12 @@ function editArticlePage(user: SessionUser, article: ArticleRow, categories: Cat
                 <select id="author-id">${renderAuthorOptions(authors, article.author_id)}</select>
               </div>
               <div class="field">
+                <label for="section-category-id">Secondary Breadcrumb</label>
+                <select id="section-category-id">${renderCategoryIdOptions(categories, article.section_category_id || '')}</select>
+              </div>
+            </div>
+            <div class="cols-2">
+              <div class="field">
                 <label for="status">Status</label>
                 <select id="status">
                   <option value="draft"${article.status === 'draft' ? ' selected' : ''}>Draft</option>
@@ -5787,8 +6307,22 @@ function editArticlePage(user: SessionUser, article: ArticleRow, categories: Cat
                 <input id="seo-title" value="${escapeHtml(article.seo_title || '')}" />
               </div>
               <div class="field">
-                <label for="seo-description">SEO Description</label>
-                <textarea id="seo-description">${escapeHtml(article.seo_description || '')}</textarea>
+                <label for="focus-keyword">Focus Keyword</label>
+                <input id="focus-keyword" value="${escapeHtml(article.focus_keyword || '')}" placeholder="Primary keyword for first 100 words audit" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="seo-description">SEO Description</label>
+              <textarea id="seo-description">${escapeHtml(article.seo_description || '')}</textarea>
+            </div>
+            <div class="cols-2">
+              <div class="field">
+                <label>Slug</label>
+                <input value="${escapeHtml(article.slug)}" readonly />
+              </div>
+              <div class="field">
+                <label>Canonical URL</label>
+                <input value="${escapeHtml(article.canonical_url || publicArticleUrl(article.slug))}" readonly />
               </div>
             </div>
             <div class="field">
@@ -5819,9 +6353,11 @@ function editArticlePage(user: SessionUser, article: ArticleRow, categories: Cat
                 title: document.getElementById('title').value,
                 category: document.getElementById('category').value,
                 authorId: document.getElementById('author-id').value,
+                sectionCategoryId: document.getElementById('section-category-id').value,
                 status: document.getElementById('status').value,
                 excerpt: document.getElementById('excerpt').value,
                 seoTitle: document.getElementById('seo-title').value,
+                focusKeyword: document.getElementById('focus-keyword').value,
                 seoDescription: document.getElementById('seo-description').value,
                 content: document.getElementById('content').value,
                 videoUrl: document.getElementById('video-url').value,
@@ -5851,6 +6387,7 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
             <td>
               <div style="font-weight:600;">${escapeHtml(category.name)}</div>
               <div style="font-size:0.8125rem;color:var(--text-muted);">/${escapeHtml(category.slug)}</div>
+              ${category.seo_title ? `<div style="font-size:0.8125rem;color:var(--text-muted);margin-top:4px;">SEO: ${escapeHtml(category.seo_title)}</div>` : ''}
             </td>
             <td>${escapeHtml(category.description || '')}</td>
             <td>${escapeHtml(String(category.sort_order))}</td>
@@ -5912,6 +6449,14 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
                   <textarea id="category-description" placeholder="Short editorial focus for this category"></textarea>
                 </div>
                 <div class="field">
+                  <label for="category-seo-title">SEO Title</label>
+                  <input id="category-seo-title" placeholder="50-65 character category SEO title" />
+                </div>
+                <div class="field">
+                  <label for="category-seo-description">SEO Description</label>
+                  <textarea id="category-seo-description" placeholder="120-160 character category meta description"></textarea>
+                </div>
+                <div class="field">
                   <label for="category-order">Sort Order</label>
                   <input id="category-order" type="number" value="100" min="0" />
                 </div>
@@ -5934,6 +6479,8 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
           document.getElementById('category-name').value = '';
           document.getElementById('category-slug').value = '';
           document.getElementById('category-description').value = '';
+          document.getElementById('category-seo-title').value = '';
+          document.getElementById('category-seo-description').value = '';
           document.getElementById('category-order').value = '100';
           document.getElementById('category-form-title').textContent = 'Add Category';
           cancelBtn.style.display = 'none';
@@ -5976,6 +6523,8 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
           document.getElementById('category-name').value = category.name;
           document.getElementById('category-slug').value = category.slug;
           document.getElementById('category-description').value = category.description || '';
+          document.getElementById('category-seo-title').value = category.seo_title || '';
+          document.getElementById('category-seo-description').value = category.seo_description || '';
           document.getElementById('category-order').value = category.sort_order || 100;
           document.getElementById('category-form-title').textContent = 'Edit Category';
           slugTouched = true;
@@ -5992,6 +6541,8 @@ function categoriesPage(user: SessionUser, categories: CategoryRow[], message = 
             name: document.getElementById('category-name').value,
             slug: document.getElementById('category-slug').value,
             description: document.getElementById('category-description').value,
+            seoTitle: document.getElementById('category-seo-title').value,
+            seoDescription: document.getElementById('category-seo-description').value,
             sort_order: Number(document.getElementById('category-order').value) || 100,
           };
           try {
@@ -6363,19 +6914,25 @@ function trainingPage(user: SessionUser, categories: CategoryRow[], samples: Tra
 function auditArticle(article: ArticleRow) {
   const issues: string[] = [];
   const contentText = stripHtml(article.content);
+  const firstWords = contentText.split(/\s+/).filter(Boolean).slice(0, 100).join(' ').toLowerCase();
+  const focusKeyword = normalizeText(article.focus_keyword).toLowerCase();
   const h2Count = (article.content.match(/<h2\b/gi) || []).length;
+  const bodyH1Count = (article.content.match(/<h1\b/gi) || []).length;
   const faqCount = (article.content.match(/faq|सवाल|प्रश्न|Q:/gi) || []).length;
   const internalLinks = (article.content.match(/href="\/[^"]+"/gi) || []).length;
   const externalLinks = (article.content.match(/href="https?:\/\//gi) || []).length;
 
-  if (!article.seo_title || article.seo_title.length < 35 || article.seo_title.length > 70) issues.push('SEO title length');
-  if (!article.seo_description || article.seo_description.length < 120 || article.seo_description.length > 170) issues.push('Meta description');
+  if (!article.seo_title || article.seo_title.length < 50 || article.seo_title.length > 65) issues.push('SEO title 50-65');
+  if (!article.seo_description || article.seo_description.length < 120 || article.seo_description.length > 160) issues.push('Meta description 120-160');
+  if (!focusKeyword) issues.push('Focus keyword');
+  if (focusKeyword && !firstWords.includes(focusKeyword)) issues.push('Keyword in first 100 words');
   if (!article.featured_image_url) issues.push('Featured image');
   if (!article.featured_image_alt) issues.push('Image alt');
   if (contentText.length < 1200) issues.push('Thin content');
+  if (bodyH1Count > 0) issues.push('Body H1');
   if (h2Count < 2) issues.push('H2 structure');
   if (faqCount < 1) issues.push('FAQ missing');
-  if (internalLinks < 1) issues.push('Internal links');
+  if (internalLinks < 2) issues.push('Internal links');
   if (externalLinks < 1 && /(vacancy|bharti|student|exam|result|admit|scholarship|भर्ती|परीक्षा|छात्र)/i.test(contentText)) issues.push('External official links');
 
   const score = Math.max(0, 100 - issues.length * 10);
@@ -6520,8 +7077,15 @@ function placeholderPage(
 app.use('*', async (c, next) => {
   const host = (c.req.header('host') || new URL(c.req.url).hostname).split(':')[0].toLowerCase();
   const url = new URL(c.req.url);
+  const requestHostname = url.hostname.toLowerCase();
+  const isLocalDevHost = host === 'localhost'
+    || host.startsWith('127.')
+    || host === '::1'
+    || requestHostname === 'localhost'
+    || requestHostname.startsWith('127.')
+    || requestHostname === '::1';
 
-  if (url.protocol === 'http:') {
+  if (url.protocol === 'http:' && !isLocalDevHost) {
     url.protocol = 'https:';
     return c.redirect(url.toString(), 301);
   }
@@ -6595,6 +7159,42 @@ app.get('/articles/new', async (c) => {
   const categories = await readCategories(c.env.ADMIN_DB);
   const authors = await readAuthors(c.env.ADMIN_DB);
   return c.html(aiGenerationPage(session, categories, authors));
+});
+
+app.get('/api/articles/:id/notification-draft', async (c) => {
+  const session = await requireSession(c);
+  if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+
+  const article = await readArticleById(c.env.ADMIN_DB, c.req.param('id'));
+  if (!article) return c.json({ ok: false, message: 'Article not found' }, 404);
+  if (article.status !== 'published') {
+    return c.json({ ok: false, message: 'Notification draft sirf published article ke liye available hai.' }, 400);
+  }
+
+  const payload = notificationPayloadFromArticle(article);
+  const category = article.category ? await readCategoryByName(c.env.ADMIN_DB, article.category) : null;
+  const testDevices = await queryAll<NotificationTestDeviceRow>(
+    c.env.ADMIN_DB.prepare(
+      'SELECT * FROM notification_test_devices WHERE opted_in = 1 ORDER BY datetime(updated_at) DESC LIMIT 20',
+    ),
+  );
+  return c.json({
+    ok: true,
+    article: {
+      id: article.id,
+      title: payload.title,
+      body: payload.body,
+      imageUrl: payload.imageUrl || '',
+      targetUrl: payload.targetUrl,
+      categoryName: article.category || '',
+      categorySlug: category?.slug || '',
+    },
+    testDevices: testDevices.map((device) => ({
+      label: device.label,
+      subscriptionId: device.subscription_id,
+    })),
+    maxScheduleDays: ONESIGNAL_MAX_SCHEDULE_DAYS,
+  });
 });
 
 app.get('/articles/:id/preview', async (c) => {
@@ -6723,8 +7323,8 @@ app.patch('/api/notifications/settings', async (c) => {
   if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
   const body = await c.req.json<{ autoSendEnabled?: boolean; maxAutoPer24h?: number }>();
   const enabled = body.autoSendEnabled === true;
-  if (enabled && (!c.env.ONESIGNAL_REST_API_KEY || !c.env.NOTIFICATION_QUEUE)) {
-    return c.json({ ok: false, message: 'REST API key aur Queue configure hone ke baad auto-send enable karein.' }, 400);
+  if (enabled && (!c.env.ONESIGNAL_APP_ID || !c.env.ONESIGNAL_REST_API_KEY || !c.env.NOTIFICATION_QUEUE)) {
+    return c.json({ ok: false, message: 'OneSignal App ID, REST API key aur Queue configure hone ke baad auto-send enable karein.' }, 400);
   }
   const maxAuto = Math.max(0, Math.min(10, Math.floor(Number(body.maxAutoPer24h) || 0)));
   await c.env.ADMIN_DB
@@ -6768,6 +7368,13 @@ app.post('/api/notifications/campaigns', async (c) => {
   if (!['all', 'category', 'test'].includes(audienceType)) {
     return c.json({ ok: false, message: 'Invalid audience' }, 400);
   }
+  if (articleId) {
+    const article = await readArticleById(c.env.ADMIN_DB, articleId);
+    if (!article) return c.json({ ok: false, message: 'Article not found' }, 404);
+    if (article.status !== 'published') {
+      return c.json({ ok: false, message: 'Notification sirf published article ke liye bhej sakte hain.' }, 400);
+    }
+  }
   if (!title || !messageBody || !targetUrl.startsWith(PUBLIC_SITE_ORIGIN)) {
     return c.json({ ok: false, message: 'Title, body aur Hindiline article URL required hain.' }, 400);
   }
@@ -6785,8 +7392,17 @@ app.post('/api/notifications/campaigns', async (c) => {
   if (scheduledDate && Number.isNaN(scheduledDate.getTime())) {
     return c.json({ ok: false, message: 'Invalid schedule date' }, 400);
   }
-  const scheduledAt = scheduledDate && scheduledDate.getTime() > Date.now() ? scheduledDate.toISOString() : null;
-  const canQueue = Boolean(c.env.ONESIGNAL_REST_API_KEY && c.env.NOTIFICATION_QUEUE);
+  if (scheduledDate && scheduledDate.getTime() <= Date.now()) {
+    return c.json({ ok: false, message: 'Schedule future time ke liye set karein.' }, 400);
+  }
+  if (scheduledDate && scheduledDate.getTime() > Date.now() + ONESIGNAL_MAX_SCHEDULE_MS) {
+    return c.json({ ok: false, message: `Schedule ${ONESIGNAL_MAX_SCHEDULE_DAYS} din ke andar set karein.` }, 400);
+  }
+  const scheduledAt = scheduledDate ? scheduledDate.toISOString() : null;
+  if (scheduledAt && (!c.env.ONESIGNAL_APP_ID || !c.env.ONESIGNAL_REST_API_KEY)) {
+    return c.json({ ok: false, message: 'Scheduled notification ke liye OneSignal App ID aur REST API key required hain.' }, 503);
+  }
+  const canQueue = Boolean(c.env.ONESIGNAL_APP_ID && c.env.ONESIGNAL_REST_API_KEY && c.env.NOTIFICATION_QUEUE);
   const status = scheduledAt ? 'scheduled' : canQueue ? 'queued' : 'ready';
   const campaignId = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -6810,28 +7426,47 @@ app.post('/api/notifications/campaigns', async (c) => {
       status,
       scheduledAt,
       crypto.randomUUID(),
-      canQueue || scheduledAt ? null : 'REST API key or Queue is not configured',
+      canQueue || scheduledAt ? null : 'OneSignal App ID, REST API key or Queue is not configured',
       session.id,
       now,
       now,
     )
     .run();
-  if (status === 'queued') await enqueueNotificationCampaign(c.env, campaignId);
+  if (status === 'queued') {
+    await enqueueNotificationCampaign(c.env, campaignId);
+  } else if (status === 'scheduled') {
+    const campaign = await readNotificationCampaignById(c.env.ADMIN_DB, campaignId);
+    try {
+      if (campaign) await scheduleOneSignalCampaign(c.env, campaign);
+    } catch (error) {
+      return c.json({ ok: false, message: error instanceof Error ? error.message : 'OneSignal schedule failed' }, 502);
+    }
+  }
   return c.json({ ok: true, campaignId, status });
 });
 
 app.post('/api/notifications/campaigns/:id/retry', async (c) => {
   const session = await requireSession(c);
   if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
-  if (!c.env.ONESIGNAL_REST_API_KEY || !c.env.NOTIFICATION_QUEUE) {
-    return c.json({ ok: false, message: 'REST API key or Queue missing है.' }, 503);
+  if (!c.env.ONESIGNAL_APP_ID || !c.env.ONESIGNAL_REST_API_KEY) {
+    return c.json({ ok: false, message: 'OneSignal App ID or REST API key missing है.' }, 503);
   }
   const id = c.req.param('id');
-  const campaign = await c.env.ADMIN_DB
-    .prepare('SELECT id, status FROM notification_campaigns WHERE id = ? LIMIT 1')
-    .bind(id)
-    .first<{ id: string; status: string }>();
-  if (!campaign || campaign.status === 'sent') return c.json({ ok: false, message: 'Campaign cannot be sent.' }, 400);
+  const campaign = await readNotificationCampaignById(c.env.ADMIN_DB, id);
+  if (!campaign || ['sent', 'cancelled', 'sending'].includes(campaign.status)) {
+    return c.json({ ok: false, message: 'Campaign cannot be sent.' }, 400);
+  }
+  if (campaign.scheduled_at && new Date(campaign.scheduled_at).getTime() > Date.now()) {
+    try {
+      await scheduleOneSignalCampaign(c.env, campaign);
+    } catch (error) {
+      return c.json({ ok: false, message: error instanceof Error ? error.message : 'OneSignal schedule failed' }, 502);
+    }
+    return c.json({ ok: true, status: 'scheduled' });
+  }
+  if (!c.env.NOTIFICATION_QUEUE) {
+    return c.json({ ok: false, message: 'Notification Queue missing है.' }, 503);
+  }
   await c.env.ADMIN_DB
     .prepare("UPDATE notification_campaigns SET status = 'queued', last_error = NULL, updated_at = ? WHERE id = ?")
     .bind(new Date().toISOString(), id)
@@ -6843,6 +7478,17 @@ app.post('/api/notifications/campaigns/:id/retry', async (c) => {
 app.post('/api/notifications/campaigns/:id/cancel', async (c) => {
   const session = await requireSession(c);
   if (!session) return c.json({ ok: false, message: 'Unauthorized' }, 401);
+  const campaign = await readNotificationCampaignById(c.env.ADMIN_DB, c.req.param('id'));
+  if (!campaign || !['ready', 'scheduled', 'queued'].includes(campaign.status)) {
+    return c.json({ ok: false, message: 'Campaign cannot be cancelled.' }, 400);
+  }
+  if (campaign.status === 'scheduled' && campaign.onesignal_notification_id) {
+    try {
+      await cancelOneSignalCampaign(c.env, campaign);
+    } catch (error) {
+      return c.json({ ok: false, message: error instanceof Error ? error.message : 'OneSignal cancel failed' }, 502);
+    }
+  }
   await c.env.ADMIN_DB
     .prepare(
       "UPDATE notification_campaigns SET status = 'cancelled', updated_at = ? WHERE id = ? AND status IN ('ready','scheduled','queued')",
@@ -6895,9 +7541,10 @@ app.patch('/api/articles/:id/status', async (c) => {
     return c.json({ ok: false, message: 'Article not found' }, 404);
   }
   const now = new Date().toISOString();
+  const normalizedContent = normalizeArticleContent(article.content || '');
   await c.env.ADMIN_DB
-    .prepare('UPDATE articles SET status = ?, updated_at = ? WHERE id = ?')
-    .bind(status, now, id)
+    .prepare('UPDATE articles SET status = ?, content = ?, updated_at = ? WHERE id = ?')
+    .bind(status, normalizedContent, now, id)
     .run();
   if (status === 'published' && article.status !== 'published') {
     c.executionCtx.waitUntil(
@@ -6924,9 +7571,11 @@ app.patch('/api/articles/:id', async (c) => {
     title?: string;
     category?: string;
     authorId?: string;
+    sectionCategoryId?: string;
     status?: string;
     excerpt?: string;
     seoTitle?: string;
+    focusKeyword?: string;
     seoDescription?: string;
     content?: string;
     videoUrl?: string;
@@ -6957,6 +7606,8 @@ app.patch('/api/articles/:id', async (c) => {
   }
 
   const authorId = await resolveAuthorId(c.env.ADMIN_DB, normalizeText(body.authorId));
+  const sectionCategoryId = await resolveSectionCategoryId(c.env.ADMIN_DB, normalizeText(body.sectionCategoryId), category);
+  const focusKeyword = normalizeText(body.focusKeyword) || null;
   content = normalizeArticleContent(content);
   content = applyArticleVideoSection(content, videoUrl, title);
   if (!hasTargetedArticleMarkup(content) && isVacancyArticle(category, title)) {
@@ -6965,13 +7616,15 @@ app.patch('/api/articles/:id', async (c) => {
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
     .prepare(
-      'UPDATE articles SET title = ?, excerpt = ?, content = ?, category = ?, seo_title = ?, seo_description = ?, status = ?, author_id = ?, updated_at = ? WHERE id = ?',
+      'UPDATE articles SET title = ?, excerpt = ?, content = ?, category = ?, focus_keyword = ?, section_category_id = ?, seo_title = ?, seo_description = ?, status = ?, author_id = ?, updated_at = ? WHERE id = ?',
     )
     .bind(
       title,
       makeExcerpt(normalizeText(body.excerpt) || content, title),
       content,
       category,
+      focusKeyword,
+      sectionCategoryId,
       normalizeText(body.seoTitle) || null,
       normalizeText(body.seoDescription) || null,
       status,
@@ -7063,6 +7716,8 @@ app.post('/api/articles/backfill-targeted-ui', async (c) => {
 
     const videoUrl = extractArticleVideoUrl(article.content || '');
     let content = renderTargetedArticleContent(article, targetedData);
+    const relatedArticles = await readRelatedArticlesForPrompt(c.env.ADMIN_DB, article.category || 'भर्ती', article.title);
+    content = ensureArticleInternalLinks(content, relatedArticles, article.category || 'भर्ती');
     content = applyArticleVideoSection(content, videoUrl, article.title);
     const excerpt = makeExcerpt(targetedData.summary || article.excerpt || article.seo_description || content, article.title);
     await c.env.ADMIN_DB
@@ -7087,10 +7742,12 @@ app.post('/api/categories', async (c) => {
     return c.json({ ok: false, message: 'Unauthorized' }, 401);
   }
 
-  const body = await c.req.json<{ name?: string; slug?: string; description?: string; sort_order?: number }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; seoTitle?: string; seoDescription?: string; sort_order?: number }>();
   const name = normalizeText(body.name);
   const requestedSlug = normalizeText(body.slug);
   const description = normalizeText(body.description);
+  const seoTitle = normalizeText(body.seoTitle);
+  const seoDescription = normalizeText(body.seoDescription);
   const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
   const slug = slugify(requestedSlug || name);
 
@@ -7108,8 +7765,8 @@ app.post('/api/categories', async (c) => {
 
   const now = new Date().toISOString();
   await c.env.ADMIN_DB
-    .prepare('INSERT INTO categories (id, name, slug, description, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(crypto.randomUUID(), name, slug, description || null, sortOrder, now, now)
+    .prepare('INSERT INTO categories (id, name, slug, description, seo_title, seo_description, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), name, slug, description || null, seoTitle || null, seoDescription || null, sortOrder, now, now)
     .run();
 
   return c.json({ ok: true });
@@ -7123,10 +7780,12 @@ app.patch('/api/categories/:id', async (c) => {
   }
 
   const id = c.req.param('id');
-  const body = await c.req.json<{ name?: string; slug?: string; description?: string; sort_order?: number }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; seoTitle?: string; seoDescription?: string; sort_order?: number }>();
   const name = normalizeText(body.name);
   const requestedSlug = normalizeText(body.slug);
   const description = normalizeText(body.description);
+  const seoTitle = normalizeText(body.seoTitle);
+  const seoDescription = normalizeText(body.seoDescription);
   const sortOrder = Math.max(0, Math.min(9999, Number(body.sort_order) || 100));
   const slug = slugify(requestedSlug || name);
 
@@ -7151,8 +7810,8 @@ app.patch('/api/categories/:id', async (c) => {
   }
 
   await c.env.ADMIN_DB
-    .prepare('UPDATE categories SET name = ?, slug = ?, description = ?, sort_order = ?, updated_at = ? WHERE id = ?')
-    .bind(name, slug, description || null, sortOrder, new Date().toISOString(), id)
+    .prepare('UPDATE categories SET name = ?, slug = ?, description = ?, seo_title = ?, seo_description = ?, sort_order = ?, updated_at = ? WHERE id = ?')
+    .bind(name, slug, description || null, seoTitle || null, seoDescription || null, sortOrder, new Date().toISOString(), id)
     .run();
 
   if (current.name !== name) {
@@ -7329,7 +7988,7 @@ app.post('/api/training', async (c) => {
     const trainingRecord = {
       title_style: scanTitleStyle ? (dbText(analysis.title_style, 'Short Hindi/Hinglish factual headline style') || 'Short Hindi/Hinglish factual headline style') : null,
       article_style: scanArticleStyle ? (dbText(analysis.article_style, 'Use crisp intro-first blog structure with short paragraphs and useful Hindi/Hinglish subheads.') || 'Use crisp intro-first blog structure with short paragraphs and useful Hindi/Hinglish subheads.') : null,
-      image_style: scanImageStyle ? (dbText(analysis.image_style, 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') || 'Featured image prompt: clean editorial image, one clear subject, no text overlay.') : null,
+      image_style: scanImageStyle ? (dbText(analysis.image_style, 'Featured image prompt: article-specific click-worthy news thumbnail, strong visual hook, useful details tied to the title/source, optional 2-4 large clean label elements.') || 'Featured image prompt: article-specific click-worthy news thumbnail, strong visual hook, useful details tied to the title/source, optional 2-4 large clean label elements.') : null,
       summary: dbText(analysis.summary, 'Training style saved.') || 'Training style saved.',
     };
     const now = new Date().toISOString();
@@ -7544,7 +8203,7 @@ app.post('/api/articles/generate', async (c) => {
     }
     const targetedData = isTargetedArticleCategory(category, title) ? blogContent.targeted_article_data : null;
     const featuredImagePrompt = featuredImageMode === 'manual' && featuredImageInstruction
-      ? `${featuredImageInstruction}\n\nUse this as the primary featured/hero image instruction for the article "${title}". Keep it editorial, 16:9 crop-safe, mobile-friendly, and without text overlay.`
+      ? `${featuredImageInstruction}\n\nUse this as the primary featured/hero image instruction for the article "${title}". Keep it editorial, article-specific, click-worthy, 16:9 crop-safe, and mobile-friendly. Use only 2-4 large clean readable label-style elements if text improves clarity; avoid tiny/random/gibberish text.`
       : blogContent.featured_image_prompt;
     const finalFeaturedImagePrompt = targetedData
       ? buildTargetedFeaturedImagePrompt(title, category, featuredImagePrompt, targetedData)
@@ -7593,6 +8252,9 @@ app.post('/api/articles/generate', async (c) => {
         },
         targetedData,
       );
+      if (controls.includeInternalLinks) {
+        content = ensureArticleInternalLinks(content, relatedArticles, category);
+      }
     } else {
       content = injectInlineImagesIntoArticle(content, inlineImagesToRender);
       if (controls.includeInternalLinks) {
@@ -7604,10 +8266,11 @@ app.post('/api/articles/generate', async (c) => {
       content = compactVacancyArticleContent(content);
     }
     const schemaMarkup = stringifySchemaMarkup(blogContent.schema_markup);
+    const focusKeyword = normalizeText(blogContent.primary_keyword) || normalizeText(blogContent.seo_title) || title;
 
     await c.env.ADMIN_DB
       .prepare(
-        'INSERT INTO articles (id, title, slug, excerpt, content, category, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, source_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO articles (id, title, slug, excerpt, content, category, focus_keyword, section_category_id, seo_title, seo_description, featured_image_url, featured_image_alt, image_object_key, canonical_url, schema_markup, source_url, status, author_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .bind(
         articleId,
@@ -7616,6 +8279,8 @@ app.post('/api/articles/generate', async (c) => {
         makeExcerpt(blogContent.meta_description || content, title),
         content,
         category,
+        focusKeyword,
+        null,
         blogContent.seo_title,
         blogContent.meta_description,
         uploadedImage.publicUrl,
@@ -7688,7 +8353,7 @@ export default {
   },
   async scheduled(_controller: unknown, env: Bindings, ctx: WorkerExecutionContext) {
     ctx.waitUntil((async () => {
-      await enqueueDueNotificationCampaigns(env);
+      await markDueScheduledNotificationCampaigns(env);
       const campaigns = await queryAll<NotificationCampaignRow>(
         env.ADMIN_DB.prepare(
           `SELECT * FROM notification_campaigns

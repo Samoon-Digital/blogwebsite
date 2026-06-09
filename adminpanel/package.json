@@ -5,7 +5,9 @@
     "scripts": {
         "dev": "wrangler dev",
         "deploy": "wrangler deploy",
-        "cf-typegen": "wrangler types"
+        "cf-typegen": "wrangler types",
+        "schema:strip-jobposting": "node scripts/remove-jobposting-schema.mjs",
+        "seo:backfill": "node scripts/seo-aeo-backfill.mjs"
     },
     "dependencies": {
         "hono": "^4.7.4"

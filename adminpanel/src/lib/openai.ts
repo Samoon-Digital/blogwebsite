@@ -16,6 +16,7 @@ type OpenAIClientConfig = {
 export interface GeneratedBlogContent {
     seo_title: string;
     meta_description: string;
+    primary_keyword?: string;
     featured_image_prompt: string;
     featured_image_alt: string;
     content: string;
@@ -386,6 +387,7 @@ class OpenAIClient {
             {
                 seo_title: title,
                 meta_description: `Read ${title}.`,
+                primary_keyword: title,
                 featured_image_prompt: '',
                 featured_image_alt: title,
                 content: '',
@@ -405,6 +407,7 @@ class OpenAIClient {
         return {
             seo_title: parsed.seo_title || title,
             meta_description: parsed.meta_description || `Read ${title}.`,
+            primary_keyword: this.scalarText((parsed as unknown as Record<string, unknown>).primary_keyword, ''),
             featured_image_prompt: parsed.featured_image_prompt,
             featured_image_alt: parsed.featured_image_alt || title,
             content: parsed.content,
@@ -525,8 +528,8 @@ Keep answers short and factual. Use only details present in the text. If officia
                 title_style: `Use concise Hindi/Hinglish headlines inspired by: ${input.title || input.sourceUrl || input.category}`,
                 article_style: 'Use crisp intro-first blog structure with short paragraphs, useful subheads, and a practical Hindi/Hinglish explainer tone.',
                 image_style: input.imageDataUrl
-                    ? 'Use the source featured image direction: clean editorial composition, one clear subject, mobile-safe crop.'
-                    : 'Use clean editorial featured images with one clear subject, low noise, and Google Discover-safe 16:9 framing.',
+                    ? 'Use the source featured image direction only as inspiration, then create an article-specific click-worthy news thumbnail with a strong visual hook, mobile-safe 16:9 crop, and useful details tied to the title.'
+                    : 'Create article-specific click-worthy news thumbnails with a strong visual hook, clear subject, useful details tied to the title/source, and Google Discover-safe 16:9 framing.',
                 linking_style: '',
                 summary: 'Fallback training analysis saved from source content.',
             },
@@ -540,8 +543,8 @@ Keep answers short and factual. Use only details present in the text. If officia
         const imageStyle = this.scalarText(
             parsedRecord.image_style,
             input.imageDataUrl
-                ? 'Featured image prompt: clean editorial composition inspired by the source image, one clear subject, mobile-safe crop, no text overlay.'
-                : 'Featured image prompt: clean editorial image, one clear subject, low visual noise, Google Discover-safe 16:9 framing, no text overlay.',
+                ? 'Featured image prompt: article-specific news thumbnail inspired by the source image direction, strong visual hook, useful details tied to the title, mobile-safe crop, optional 2-4 large clean label elements.'
+                : 'Featured image prompt: article-specific click-worthy news thumbnail, strong visual hook, clear subject, useful details tied to the title/source, Google Discover-safe 16:9 framing, optional 2-4 large clean label elements.',
         );
 
         return {
@@ -578,14 +581,13 @@ Keep answers short and factual. Use only details present in the text. If officia
 - If text rendering is uncertain, use blank label panels, icons, numbers, forms, and document blocks instead of unreadable text
 - 16:9 aspect ratio, Google Discover-friendly, sharp mobile crop, high contrast, useful for a Hindi government update website`
             : `Requirements:
-- Professional quality suitable for blog headers
-- Bright, engaging colors that stand out
-- Clear, readable even as a thumbnail
-- Emotional appeal with relatable imagery
-- No text overlays on image
-- 16:9 aspect ratio (ideal for web)
-- Clean editorial composition with one clear subject, low visual noise, sharp edges, and uncluttered background
-- Google Discover-friendly large image composition, safe at 1200px+ wide and strong on mobile crops`;
+- Professional Hindi news thumbnail / editorial featured image, not a generic blog header or stock photo
+- Make the visual specific to this article title and prompt: show the real concept, outcome, place, document, product, person type, chart, process, or visual metaphor that makes the story understandable before clicking
+- Use a strong hook: contrast, action, useful detail, clear foreground subject, and a composition that feels worth opening
+- Avoid generic smiling person, random human face, plain office/laptop scene, decorative background, empty landscape, and unrelated stock imagery
+- Text is allowed only as 2-4 large clean readable label-style elements when useful, such as a keyword, number, date, alert, comparison, or short English/Hindi label; no tiny paragraphs, random letters, or gibberish text
+- If text rendering is uncertain, use blank label panels, icons, documents, charts, calendars, arrows, and visual hierarchy instead of unreadable text
+- 16:9 aspect ratio, Google Discover-friendly, sharp mobile crop, high contrast, low visual noise, and clear at thumbnail size`;
         const imagePrompt = `
 Create a professional, engaging featured image for a blog post titled: "${title}"
 
