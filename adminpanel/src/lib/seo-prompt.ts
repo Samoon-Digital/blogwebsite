@@ -174,9 +174,10 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - Fill as many targeted_article_data arrays as facts allow; keep each item short.
-- Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, 3-5 faqs.
-- Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, 3-5 faqs.
-- Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, 3-5 faqs.
+- Jobs/recruitment: prioritize quickFacts, importantDates, postsOrSeats, fees, eligibility, ageLimit, selectionProcess, howToApply, documents, and only the useful FAQs the article genuinely needs.
+- Admit card: prioritize quickFacts, importantDates, eligibility/exam details, howToApply/download steps, documents, officialLinks, and only the useful FAQs the article genuinely needs.
+- Admissions: prioritize dates, seats/courses, fees, eligibility, ageLimit only if relevant, howToApply, documents, and only the useful FAQs the article genuinely needs.
+- Decide the FAQ count from the available facts and reader intent. Return 0-10 concise, non-repetitive FAQs; use an empty array when FAQs would be filler.
 - Featured image prompt must not request a generic laptop/office/candidate-at-desk stock photo. For jobs, make it a recruitment news card with department/post-specific workplace or uniform/document visual. For admit card, show exam/admit-card document and exam hall/checklist visual. For admissions, show college/institute admission form/campus visual.
 - Use image text only as 2-4 large clean label elements such as department acronym/name, short subject, year, post count or last date. Do not put the full article title on the image. Avoid tiny Hindi paragraphs and random decorative text.
 - If exact official URL is not known, return officialLinks as [].
@@ -185,10 +186,10 @@ Rules:
     const vacancyArticleInstructions = isVacancyArticle
         ? `## Vacancy Article Mode
 - This is a jobs/vacancy article, so keep it short, practical, and highly scannable.
-- Only include the main reader-useful sections: overview/highlights, important dates, post or vacancy details, eligibility, fees, age limit, selection process, how to apply, important links, and FAQs.
+- Only include the main reader-useful sections: overview/highlights, important dates, post or vacancy details, eligibility, fees, age limit, selection process, how to apply, important links, and useful FAQs when needed.
 - Do not add background explainers, history, generic career advice, motivational filler, trend commentary, or extra descriptive sections from your side.
-- Target roughly 450-750 words total for the article body, including FAQs.
-- Use at most 5 main H2 sections before the FAQ section.
+- Target roughly 450-750 words total for the article body, including any useful FAQs.
+- Use at most 5 main H2 sections before an optional FAQ section.
 - Keep each section tight: 1 short paragraph and/or 2-5 bullets, or one small useful table only when it directly helps.
 - Do not include a table of contents for vacancy/job articles.`
         : '';
@@ -211,7 +212,7 @@ Editorial focus:
 "${category}"
 
 ## Article Controls
-- FAQs: ${controls.includeFaqs ? 'ON - include helpful FAQ section and FAQ schema.' : 'OFF - do not include FAQ section or FAQ schema.'}
+- FAQs: ${controls.includeFaqs ? 'ON - independently choose 0-10 useful FAQs; omit both the section and FAQ schema when none are needed.' : 'OFF - do not include FAQ section or FAQ schema.'}
 - Table of Contents: ${controls.includeToc ? 'ON - include a compact table of contents for long articles.' : 'OFF - do not include table of contents.'}
 - Internal Links: ${controls.includeInternalLinks ? 'ON - add inline internal links from the provided related articles where natural.' : 'OFF - avoid internal links.'}
 - External Links: ${controls.includeExternalLinks ? 'ON - add authoritative external links where useful, especially for vacancy/student/government topics.' : 'OFF - avoid external links unless source citation is essential.'}
@@ -257,7 +258,7 @@ ${schemaTypes.map((type) => `- ${type}`).join('\n')}
 Key schemas to implement:
 - **NewsArticle Schema**: Present every article as a news-style article with headline, datePublished, dateModified, author, publisher, description, and mainEntityOfPage
 - **BreadcrumbList Schema**: Navigation hierarchy for better crawling
-- **FAQPageSchema**: FAQ section with questions and answers
+- **FAQPageSchema**: Generate only when matching questions and answers are visibly present in the article
 - **OrganizationSchema**: Your organization/website information
 - **ImageObject Schema**: Include featured image and every useful inline image with URL/contentUrl, alt/description, caption, width and height when known
 - **Speakable Schema**: Add speakable selectors for the H1, dek/summary and first useful paragraph where applicable
@@ -322,11 +323,11 @@ CRITICAL: First 100 words must:
 - Keep the first paragraph concise and human because the opening summary may be reused as the article description/dek
 
 ### 8. FAQ Section (Powerful for SEO)
-${controls.includeFaqs ? 'Include 3-5 FAQ questions relevant to the topic at the end of the article:' : 'Do not include FAQ questions for this article.'}
+${controls.includeFaqs ? 'Decide how many FAQs the article genuinely needs and include 0-10 concise, non-repetitive questions at the end. Omit the FAQ section when it would add no useful information:' : 'Do not include FAQ questions for this article.'}
 - Format: Q: [Question], A: [Answer]
 - Include keyword variations in questions
 - Provide direct, helpful answers
-- Will be converted to FAQPageSchema
+- Visible FAQs will be converted to FAQPageSchema; never return FAQ schema without a matching visible FAQ
 
 Example:
 Q: Waiting ticket confirm kab hota hai?
@@ -417,7 +418,7 @@ Return ONLY valid JSON with this exact structure:
   "primary_keyword": "Main search keyword naturally used in the first 100 words",
   "featured_image_prompt": "Detailed prompt for GPT Image to generate image (150+ words describing visual style, composition, subject matter)",
   "featured_image_alt": "ALT text for featured image including keyword",
-  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p><h2>FAQ Section</h2><div class=\"faq\"><div class=\"faq-item\"><strong>Q: Question?</strong><p>A: Answer...</p></div></div>",
+  "content": "<p>First 100 words with keyword...</p><h2>Section 1</h2><p>Content with a natural internal link like <a href=\"/article-slug\">Article Title</a> when relevant.</p>",
   "inline_images": [
     {
       "name": "Short image name",
@@ -444,7 +445,7 @@ Return ONLY valid JSON with this exact structure:
 ## Important Notes
 
 1. **Content Quality**: Write comprehensive, valuable blogs that answer user questions
-${isVacancyArticle ? '1B. **Vacancy Focus**: Keep vacancy articles concise and action-focused. Do not add extra explanatory filler beyond the core recruitment details and FAQs.' : ''}
+${isVacancyArticle ? '1B. **Vacancy Focus**: Keep vacancy articles concise and action-focused. Do not add extra explanatory filler beyond the core recruitment details and any genuinely useful FAQs.' : ''}
 2. **Natural Writing**: Avoid keyword stuffing - maintain natural flow
 3. **SEO First**: Balance readability with SEO optimization
 4. **Hindi/English Mix**: Write in Hinglish for better Indian audience engagement

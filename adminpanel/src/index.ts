@@ -803,7 +803,7 @@ function renderTargetedOfficialLinks(data: TargetedArticleData) {
 }
 
 function renderTargetedFaqs(data: TargetedArticleData) {
-  const faqs = filterTargetedItems(data.faqs, 5);
+  const faqs = filterTargetedItems(data.faqs, 10);
   if (!faqs.length) {
     return '';
   }
@@ -2795,25 +2795,26 @@ function publicStyles() {
     .ticker-list li::before { content: ""; display: inline-block; width: 4px; height: 4px; margin: 0 12px 2px 0; border-radius: 50%; background: #fff; opacity: 0.9; }
     .ticker-arrow { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
     .home-spotlight { padding: 28px 0 10px; }
-    .home-carousel { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(105deg, #f7fbff 0%, #ffffff 48%, #edf5ff 100%); box-shadow: 0 20px 45px rgba(15, 38, 70, 0.08); }
-    .home-slides { display: flex; transition: transform 0.42s ease; }
-    .home-slide { min-width: 100%; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr); gap: 18px; align-items: stretch; }
-    .home-slide-copy { padding: 42px 42px 48px; display: grid; align-content: center; gap: 16px; min-height: 340px; }
-    .latest-badge { width: fit-content; display: inline-flex; align-items: center; min-height: 30px; padding: 0 13px; border-radius: 8px; background: var(--red); color: #fff; font-size: 0.82rem; font-weight: 840; }
-    .home-slide h2 { font-size: clamp(1.9rem, 1.35rem + 1.8vw, 3.25rem); line-height: 1.16; font-weight: 850; overflow-wrap: anywhere; }
-    .home-slide p { max-width: 650px; color: #364152; font-size: 1rem; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .home-carousel { position: relative; }
+    .home-carousel-viewport { overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scroll-behavior: smooth; scrollbar-width: none; overscroll-behavior-inline: contain; }
+    .home-carousel-viewport::-webkit-scrollbar { display: none; }
+    .home-slides { display: flex; gap: 12px; }
+    .home-slide { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; }
+    .home-carousel-card { height: 100%; }
+    .home-carousel-card .post-card-body { position: relative; }
+    .home-card-empty { width: 100%; aspect-ratio: 16 / 9; display: grid; place-items: center; border-bottom: 1px solid var(--border); background: var(--soft); color: var(--accent); font-weight: 850; }
+    .latest-badge { width: fit-content; display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border-radius: 6px; background: var(--red); color: #fff; font-size: 0.72rem; font-weight: 850; animation: latest-label-blink 1.25s ease-in-out infinite; }
+    @keyframes latest-label-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.48; } }
     .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
     .hero-btn { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border-radius: 7px; padding: 0 16px; border: 1px solid var(--border); background: #fff; color: var(--ink); font-weight: 800; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.06); }
     .hero-btn.primary { border-color: var(--red); background: var(--red); color: #fff; box-shadow: 0 10px 22px rgba(225, 25, 36, 0.2); }
-    .home-slide-media { min-height: 340px; background: #eaf1f9; display: flex; align-items: stretch; justify-content: center; }
-    .home-slide-media img { width: 100%; height: 100%; min-height: 340px; object-fit: cover; }
-    .slide-empty-image { width: 100%; min-height: 340px; display: grid; place-items: center; background: linear-gradient(135deg, #e9f3ff, #fff6e0); color: var(--accent); font-size: 1.5rem; font-weight: 850; }
-    .slider-controls { position: static; display: inline-flex; align-items: center; gap: 12px; padding: 0 42px 22px; }
+    .slider-controls { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px; padding-top: 10px; }
     .slider-dots { display: inline-flex; align-items: center; gap: 4px; }
-    .slider-dot { width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; cursor: pointer; position: relative; display: inline-flex; align-items: center; justify-content: center; }
+    .slider-dot { width: 28px; height: 36px; border: 0; border-radius: 50%; background: transparent; cursor: pointer; position: relative; display: inline-flex; align-items: center; justify-content: center; }
     .slider-dot::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #c6ced9; }
     .slider-dot.active::before { width: 18px; border-radius: 999px; background: var(--red); }
-    .slide-arrow { width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.08); }
+    .slide-arrow { width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 50%; background: #fff; color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 8px 18px rgba(15, 38, 70, 0.08); }
+    .slide-arrow:disabled { opacity: 0.45; cursor: default; }
     .slide-arrow.prev svg { transform: rotate(180deg); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .section-head h2 { font-size: clamp(1.25rem, 1.04rem + 0.42vw, 1.62rem); line-height: 1.2; font-weight: 850; position: relative; padding-bottom: 10px; }
@@ -2991,8 +2992,8 @@ function publicStyles() {
     .load-status { color: var(--muted); font-size: 0.92rem; }
     .home-recent-sentinel { min-height: 1px; }
     .home-recent-link { display: none; width: fit-content; margin: 8px auto 0; }
-    @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .article { padding-top: 34px; } }
-    @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .content { font-size: 1.03rem; } }
+    @media (min-width: 700px) { .wrap { width: min(1240px, calc(100% - 32px)); } .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; } .home-slides { gap: 18px; } .home-slide { flex-basis: calc((100% - 18px) / 2); } .article { padding-top: 34px; } }
+    @media (min-width: 1100px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; } .home-slides { gap: 20px; } .home-slide { flex-basis: calc((100% - 60px) / 4); } .content { font-size: 1.03rem; } }
     @media (max-width: 820px) {
       .header-top-inner { display: grid; grid-template-columns: auto 1fr auto auto; min-height: 54px; gap: 8px; padding: 5px 0; }
       .mobile-site-menu { grid-column: 1; grid-row: 1; display: inline-flex; }
@@ -3007,11 +3008,6 @@ function publicStyles() {
       .ticker-list { gap: 0; }
       .ticker-list li { width: calc(100vw - 130px); max-width: none; font-size: 0.84rem; }
       .home-spotlight { padding-top: 16px; }
-      .home-slide { grid-template-columns: 1fr; }
-      .home-slide-copy { min-height: auto; padding: 22px 18px 18px; }
-      .home-slide-media { min-height: 220px; order: -1; }
-      .home-slide-media img, .slide-empty-image { min-height: 220px; }
-      .slider-controls { padding: 0 18px 16px; }
       .footer-links { display: flex; width: 100%; gap: 12px; }
       .hero { padding: 20px 0 14px; }
       .content.targeted-content { max-width: 100%; }
@@ -3025,8 +3021,10 @@ function publicStyles() {
       .nav-more div { right: -44px; }
       .hero-actions { gap: 8px; }
       .hero-btn { width: auto; min-height: 38px; padding: 0 14px; }
-      .home-slide h2 { font-size: 1.55rem; line-height: 1.24; }
-      .home-slide p { font-size: 0.92rem; }
+      .slider-controls { gap: 6px; }
+      .slider-dots { gap: 1px; min-width: 0; }
+      .slider-dot { width: 20px; height: 34px; }
+      .slide-arrow { width: 36px; height: 36px; flex: 0 0 36px; }
       .post-card-body { padding: 14px 14px 16px; }
       .post-card h2 { font-size: 1rem; line-height: 1.5; }
       .post-card p { font-size: 0.9rem; }
@@ -3065,6 +3063,10 @@ function publicStyles() {
       .post-card.mobile-initial-buffer.is-visible, .post-card.home-recent-extra.is-visible { display: grid; }
       .desktop-section-link { display: none; }
       .home-recent-link.is-visible { display: inline-flex; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .home-carousel-viewport { scroll-behavior: auto; }
+      .latest-badge { animation: none; }
     }
   `;
 }
@@ -3325,6 +3327,14 @@ function publicEnhancementScript(notificationCategories: Array<{ slug: string; n
             serviceWorkerPath: 'OneSignalSDKWorker.js',
             serviceWorkerParam: { scope: '/' },
             notifyButton: { enable: false },
+            promptOptions: {
+              slidedown: {
+                prompts: [{
+                  type: 'push',
+                  autoPrompt: false,
+                }],
+              },
+            },
           });
           updatePushState();
           OneSignal.User.PushSubscription.addEventListener('change', updatePushState);
@@ -3539,23 +3549,116 @@ function publicEnhancementScript(notificationCategories: Array<{ slug: string; n
 
       const carousel = document.querySelector('[data-home-carousel]');
       if (!carousel) return;
+      const viewport = carousel.querySelector('[data-carousel-viewport]');
       const track = carousel.querySelector('.home-slides');
       const slides = track ? Array.from(track.children) : [];
-      const dots = Array.from(carousel.querySelectorAll('[data-slide-dot]'));
+      const dotsContainer = carousel.querySelector('[data-slider-dots]');
+      const controls = carousel.querySelector('.slider-controls');
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       let slideIndex = 0;
-      const showSlide = (nextIndex) => {
-        if (!track || !slides.length) return;
-        slideIndex = (nextIndex + slides.length) % slides.length;
-        track.style.transform = 'translateX(-' + (slideIndex * 100) + '%)';
-        dots.forEach((dot, index) => dot.classList.toggle('active', index === slideIndex));
+      let autoTimer = 0;
+      let scrollTimer = 0;
+      const visibleCount = () => {
+        if (!viewport || !track || !slides.length) return 1;
+        const gap = Number.parseFloat(getComputedStyle(track).columnGap || getComputedStyle(track).gap) || 0;
+        const slideWidth = slides[0].getBoundingClientRect().width;
+        return Math.max(1, Math.round((viewport.clientWidth + gap) / (slideWidth + gap)));
+      };
+      const maxSlideIndex = () => Math.max(0, slides.length - visibleCount());
+      const syncDots = () => {
+        if (!dotsContainer) return;
+        Array.from(dotsContainer.children).forEach((dot, index) => {
+          dot.classList.toggle('active', index === slideIndex);
+          dot.setAttribute('aria-current', index === slideIndex ? 'true' : 'false');
+        });
+      };
+      const showSlide = (nextIndex, behavior = 'smooth') => {
+        if (!viewport || !track || !slides.length) return;
+        const maxIndex = maxSlideIndex();
+        slideIndex = maxIndex ? (nextIndex + maxIndex + 1) % (maxIndex + 1) : 0;
+        viewport.scrollTo({
+          left: slides[slideIndex].offsetLeft - track.offsetLeft,
+          behavior: reducedMotion ? 'auto' : behavior,
+        });
+        syncDots();
+      };
+      const stopAuto = () => {
+        if (autoTimer) window.clearInterval(autoTimer);
+        autoTimer = 0;
+      };
+      const startAuto = () => {
+        stopAuto();
+        if (!reducedMotion && maxSlideIndex() > 0) {
+          autoTimer = window.setInterval(() => showSlide(slideIndex + 1), 2500);
+        }
+      };
+      const rebuildDots = () => {
+        const maxIndex = maxSlideIndex();
+        slideIndex = Math.min(slideIndex, maxIndex);
+        if (controls) controls.hidden = maxIndex === 0;
+        if (!dotsContainer) return;
+        dotsContainer.replaceChildren();
+        for (let index = 0; index <= maxIndex; index += 1) {
+          const dot = document.createElement('button');
+          dot.className = 'slider-dot' + (index === slideIndex ? ' active' : '');
+          dot.type = 'button';
+          dot.setAttribute('aria-label', 'अपडेट समूह ' + (index + 1) + ' दिखाएं');
+          dot.setAttribute('aria-current', index === slideIndex ? 'true' : 'false');
+          dot.addEventListener('click', () => {
+            showSlide(index);
+            startAuto();
+          });
+          dotsContainer.appendChild(dot);
+        }
+        showSlide(slideIndex, 'auto');
+        startAuto();
       };
       carousel.querySelectorAll('[data-slide-dir]').forEach((button) => {
-        button.addEventListener('click', () => showSlide(slideIndex + Number(button.getAttribute('data-slide-dir'))));
+        button.addEventListener('click', () => {
+          showSlide(slideIndex + Number(button.getAttribute('data-slide-dir')));
+          startAuto();
+        });
       });
-      dots.forEach((dot, index) => dot.addEventListener('click', () => showSlide(index)));
-      if (slides.length > 1) {
-        setInterval(() => showSlide(slideIndex + 1), 5200);
+      if (viewport) {
+        viewport.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+          event.preventDefault();
+          showSlide(slideIndex + (event.key === 'ArrowRight' ? 1 : -1));
+          startAuto();
+        });
+        viewport.addEventListener('pointerdown', stopAuto, { passive: true });
+        viewport.addEventListener('pointerup', startAuto, { passive: true });
+        viewport.addEventListener('pointercancel', startAuto, { passive: true });
+        viewport.addEventListener('scroll', () => {
+          window.clearTimeout(scrollTimer);
+          scrollTimer = window.setTimeout(() => {
+            const maxIndex = maxSlideIndex();
+            let nearestIndex = 0;
+            let nearestDistance = Number.POSITIVE_INFINITY;
+            for (let index = 0; index <= maxIndex; index += 1) {
+              const distance = Math.abs((slides[index].offsetLeft - track.offsetLeft) - viewport.scrollLeft);
+              if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestIndex = index;
+              }
+            }
+            slideIndex = nearestIndex;
+            syncDots();
+          }, 80);
+        }, { passive: true });
       }
+      carousel.addEventListener('mouseenter', stopAuto);
+      carousel.addEventListener('mouseleave', startAuto);
+      carousel.addEventListener('focusin', stopAuto);
+      carousel.addEventListener('focusout', (event) => {
+        if (!carousel.contains(event.relatedTarget)) startAuto();
+      });
+      let carouselResizeFrame = 0;
+      window.addEventListener('resize', () => {
+        cancelAnimationFrame(carouselResizeFrame);
+        carouselResizeFrame = requestAnimationFrame(rebuildDots);
+      }, { passive: true });
+      rebuildDots();
     })();
   `;
 }
@@ -3569,27 +3672,6 @@ function escapeJsonForHtml(value: unknown) {
 
 function jsonLdScript(value: unknown) {
   return `<script type="application/ld+json">${escapeJsonForHtml(value)}</script>`;
-}
-
-function storedSchemaObjects(schemaMarkup: string | null | undefined) {
-  if (!schemaMarkup) {
-    return [];
-  }
-
-  try {
-    const parsed = sanitizeSchemaMarkup(JSON.parse(schemaMarkup)) as unknown;
-    const candidates = Array.isArray(parsed) ? parsed : Object.values(parsed as Record<string, unknown>);
-    return candidates
-      .map((item) => {
-        const maybeSchema = item as { data?: unknown };
-        return maybeSchema?.data || item;
-      })
-      .filter((item): item is Record<string, unknown> => {
-        return Boolean(item && typeof item === 'object' && item['@type'] === 'FAQPage');
-      });
-  } catch {
-    return [];
-  }
 }
 
 function faqPageJsonLdFromContent(content: string) {
@@ -3611,7 +3693,7 @@ function faqPageJsonLdFromContent(content: string) {
 
   const uniqueFaqs = faqs
     .filter((faq, index, source) => source.findIndex((item) => item.question === faq.question) === index)
-    .slice(0, 5);
+    .slice(0, 10);
   if (!uniqueFaqs.length) {
     return null;
   }
@@ -3895,7 +3977,7 @@ function articleHeadExtras(article: PublicArticleRow | ArticleRow, preview: bool
       : []),
     ...imageSchemas,
     ...(videoSchema ? [videoSchema] : []),
-    ...(visibleFaqSchema ? [visibleFaqSchema] : storedSchemaObjects(article.schema_markup)),
+    ...(visibleFaqSchema ? [visibleFaqSchema] : []),
   ];
 
   return `
@@ -3950,39 +4032,38 @@ function renderHomeTrendingStrip(articles: PublicArticleRow[]) {
 
 function renderHomeSlide(article: PublicArticleRow, index: number) {
   const image = article.featured_image_url
-    ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, index === 0 ? 1080 : 860, 72))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 820px) calc(100vw - 18px), 52vw" width="1080" height="608" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
-    : '<div class="slide-empty-image">Hindiline Update</div>';
-  const summary = limitTextWords(article.excerpt || article.seo_description || 'Read the latest update on Hindiline.', 24);
+    ? `<img src="${escapeHtml(optimizedImageUrl(article.featured_image_url, 640, 72))}" srcset="${escapeHtml(featuredImageSrcset(article.featured_image_url))}" sizes="(max-width: 699px) calc(100vw - 18px), (max-width: 1099px) calc((100vw - 50px) / 2), 295px" width="640" height="360" alt="${escapeHtml(article.featured_image_alt || article.title)}" loading="${index < 4 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" />`
+    : '<div class="home-card-empty">Hindiline Update</div>';
 
-  return `<article class="home-slide">
-    <div class="home-slide-copy">
+  return `<div class="home-slide">
+    <a class="post-card home-carousel-card" href="/${escapeHtml(article.slug)}">
+      ${image}
+      <div class="post-card-body">
       <span class="latest-badge">लेटेस्ट अपडेट</span>
       <h2>${escapeHtml(article.title)}</h2>
-      <p>${escapeHtml(summary)}</p>
-      <div class="hero-actions">
-        <a class="hero-btn primary" href="/${escapeHtml(article.slug)}">पूरी जानकारी पढ़ें<span class="sr-only">: ${escapeHtml(article.title)}</span> ${renderPublicIcon('arrow')}</a>
+        <div class="article-card-meta">
+          <span>${renderPublicIcon('current')} ${escapeHtml(formatCardDateLabel(article.updated_at))}</span>
+          <span>${escapeHtml(`${estimateReadMinutes(article.content || article.excerpt || article.title)} मिनट पढ़ें`)}</span>
+        </div>
       </div>
-    </div>
-    <div class="home-slide-media">${image}</div>
-  </article>`;
+    </a>
+  </div>`;
 }
 
 function renderHomeCarousel(articles: PublicArticleRow[]) {
-  const slides = articles.slice(0, 4);
+  const slides = articles.slice(0, 8);
   if (!slides.length) {
     return '';
   }
 
-  const dots = slides
-    .map((_, index) => `<button class="slider-dot${index === 0 ? ' active' : ''}" type="button" data-slide-dot aria-label="Show update ${index + 1}"></button>`)
-    .join('');
-
   return `<section class="wrap home-spotlight">
-    <div class="home-carousel" data-home-carousel>
-      <div class="home-slides">${slides.map(renderHomeSlide).join('')}</div>
+    <div class="home-carousel" data-home-carousel aria-label="लेटेस्ट अपडेट">
+      <div class="home-carousel-viewport" data-carousel-viewport tabindex="0">
+        <div class="home-slides">${slides.map(renderHomeSlide).join('')}</div>
+      </div>
       ${slides.length > 1 ? `<div class="slider-controls">
         <button class="slide-arrow prev" type="button" data-slide-dir="-1" aria-label="Previous update">${renderPublicIcon('arrow')}</button>
-        <div class="slider-dots">${dots}</div>
+        <div class="slider-dots" data-slider-dots></div>
         <button class="slide-arrow" type="button" data-slide-dir="1" aria-label="Next update">${renderPublicIcon('arrow')}</button>
       </div>` : ''}
     </div>
@@ -4050,7 +4131,7 @@ function renderPublicPostCard(
 function publicHomePage(articles: PublicArticleRow[], categories: CategoryRow[]) {
   const spotlight = renderHomeCarousel(articles);
   const trending = renderHomeTrendingStrip(articles);
-  const recentArticles = articles.slice(4, 12);
+  const recentArticles = articles.slice(8, 12);
   const recent = recentArticles.length
     ? `<section class="wrap post-grid-section" id="recent-news">
         <div class="section-head">
@@ -6918,7 +6999,6 @@ function auditArticle(article: ArticleRow) {
   const focusKeyword = normalizeText(article.focus_keyword).toLowerCase();
   const h2Count = (article.content.match(/<h2\b/gi) || []).length;
   const bodyH1Count = (article.content.match(/<h1\b/gi) || []).length;
-  const faqCount = (article.content.match(/faq|सवाल|प्रश्न|Q:/gi) || []).length;
   const internalLinks = (article.content.match(/href="\/[^"]+"/gi) || []).length;
   const externalLinks = (article.content.match(/href="https?:\/\//gi) || []).length;
 
@@ -6931,7 +7011,6 @@ function auditArticle(article: ArticleRow) {
   if (contentText.length < 1200) issues.push('Thin content');
   if (bodyH1Count > 0) issues.push('Body H1');
   if (h2Count < 2) issues.push('H2 structure');
-  if (faqCount < 1) issues.push('FAQ missing');
   if (internalLinks < 2) issues.push('Internal links');
   if (externalLinks < 1 && /(vacancy|bharti|student|exam|result|admit|scholarship|भर्ती|परीक्षा|छात्र)/i.test(contentText)) issues.push('External official links');
 
